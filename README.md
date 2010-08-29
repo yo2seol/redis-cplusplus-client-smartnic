@@ -12,10 +12,10 @@ It was changed to work with Redis 1.2.
 Please note, that this software has an experimental state.
 
 API:
-It is not guarateed that the api from the intial 'fictorial' release will be continued. Generally the current api is not
-stable and not well documentated. Please have a look at the provided test cases (test_client.cpp) to see what is currently possible.
+It is not guaranteed that the api from the initial 'fictorial' release will be continued. Generally the current api is not
+stable and not well documented. Please have a look at the provided test cases (test_client.cpp) to see what is currently possible.
 
-Any kind of feedback, suggestions and bug reports is very wellcome.
+Any kind of feedback, suggestions and bug reports is very welcome.
 
 ## License
 
