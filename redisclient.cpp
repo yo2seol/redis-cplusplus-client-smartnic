@@ -44,6 +44,9 @@
 
 #include <sys/errno.h>
 #include <sys/socket.h>
+#include <boost/concept_check.hpp>
+#include <boost/proto/transform/make.hpp>
+#include <boost/lexical_cast.hpp>
 
 using namespace std;
 
@@ -105,17 +108,29 @@ namespace
   class makecmd
   {
   public:
-    explicit makecmd(const string & initial, bool finalize = false) 
+    explicit makecmd(const string & cmd_name)
     {
-      buffer_ << initial;
-      if (!finalize)
-        buffer_ << " ";
+      append(cmd_name);
+      //if (!finalize)
+      //  buffer_ << " ";
+    }
+
+    inline makecmd & operator<<(const string & datum)
+    {
+      append(datum);
+      return *this;
     }
 
     template <typename T> 
     makecmd & operator<<(T const & datum)
     {
-      buffer_ << datum;
+      append( boost::lexical_cast<string>(datum) );
+      return *this;
+    }
+
+    makecmd & operator<<(const vector<string> & data)
+    {
+      lines_.insert( lines_.end(), data.begin(), data.end() );
       return *this;
     }
 
@@ -125,21 +140,36 @@ namespace
       size_t n = data.size();
       for (size_t i = 0; i < n; ++i)
       {
-        buffer_ << data[i];
-        if (i < n - 1)
-          buffer_ << " ";
+        append( boost::lexical_cast<string>( data[i] ) );
+        //if (i < n - 1)
+        //  buffer_ << " ";
       }
       return *this;
     }
 
     operator std::string ()
     {
-      buffer_ << CRLF;
-      return buffer_.str();
+      ostringstream oss;
+      size_t n = lines_.size();
+      oss << '*' << n << CRLF;
+
+      for (size_t i = 0; i < n; ++i)
+      {
+        const string & param = lines_[i];
+        oss << '$' << param.size() << CRLF;
+        oss << param << CRLF;
+      }
+
+      return oss.str();
     }
 
   private:
-    ostringstream buffer_;
+    void append(const std::string & param)
+    {
+      lines_.push_back(param);
+    }
+    
+    vector<string> lines_;
   };
 
   // Reads N bytes from given blocking socket.
@@ -267,7 +297,9 @@ namespace
   const string server_info_key_uptime_in_seconds = "uptime_in_seconds";
   const string server_info_key_uptime_in_days = "uptime_in_days";
   const string server_info_key_role = "role";
-
+  const string server_info_key_arch_bits = "arch_bits";
+  const string server_info_key_multiplexing_api = "multiplexing_api";
+  
   const string server_info_value_role_master = "master";
   const string server_info_value_role_slave = "slave";
 }
@@ -330,7 +362,30 @@ namespace redis
   void client::set(const client::string_type & key, 
                    const client::string_type & value)
   {
-    send_(makecmd("SET") << key << ' ' << value.size() << CRLF << value);
+    send_(makecmd("SET") << key << value);
+    recv_ok_reply_();
+  }
+
+  void client::mset( const client::string_vector & keys, const client::string_vector & values )
+  {
+    makecmd m("MSET");
+    assert( keys.size() == values.size() );
+
+    for(size_t i=0; i < keys.size(); i++)
+      m << keys[i] << values[i];
+
+    send_(m);
+    recv_ok_reply_();
+  }
+
+  void client::mset( const client::string_pair_vector & key_value_pairs )
+  {
+    makecmd m("MSET");
+    
+    for(size_t i=0; i < key_value_pairs.size(); i++)
+      m << key_value_pairs[i].first << key_value_pairs[i].second;
+    
+    send_(m);
     recv_ok_reply_();
   }
 
@@ -343,7 +398,7 @@ namespace redis
   client::string_type client::getset(const client::string_type & key, 
                                      const client::string_type & value)
   {
-    send_(makecmd("GETSET") << key << ' ' << value.size() << CRLF << value);
+    send_(makecmd("GETSET") << key << value);
     return recv_bulk_reply_();
   }
 
@@ -356,10 +411,58 @@ namespace redis
   bool client::setnx(const client::string_type & key, 
                      const client::string_type & value)
   {
-    send_(makecmd("SETNX") << key << ' ' << value.size() << CRLF << value);
+    send_(makecmd("SETNX") << key << value);
     return recv_int_reply_() == 1;
   }
+  
+  bool client::msetnx( const client::string_vector & keys, const client::string_vector & values )
+  {
+    makecmd m("MSETNX");
+    assert( keys.size() == values.size() );
+    
+    for(size_t i=0; i < keys.size(); i++)
+      m << keys[i] << values[i];
+    
+    send_(m);
+    return recv_int_reply_() == 1;
+  }
+  
+  bool client::msetnx( const client::string_pair_vector & key_value_pairs )
+  {
+    makecmd m("MSETNX");
+    
+    for(size_t i=0; i < key_value_pairs.size(); i++)
+      m << key_value_pairs[i].first << key_value_pairs[i].second;
+    
+    send_(m);
+    return recv_int_reply_() == 1;
+  }
+  
+  void client::setex(const client::string_type & key,
+                     const client::string_type & value,
+                     unsigned int secs)
+  {
+    send_(makecmd("SETEX") << key << secs << value);
+    recv_ok_reply_();
+  }
 
+  size_t client::append(const client::string_type & key, const client::string_type & value)
+  {
+    send_(makecmd("APPEND") << key << value);
+    int res = recv_int_reply_();
+    if(res < 0)
+      throw protocol_error("expected value size");
+
+    assert( static_cast<size_t>(res) >= value.size() );
+    return static_cast<size_t>(res);
+  }
+  
+  client::string_type client::substr(const string_type & key, int start, int end)
+  {
+    send_(makecmd("SUBSTR") << key << start << end);
+    return recv_bulk_reply_();
+  }
+  
   client::int_type client::incr(const client::string_type & key)
   {
     send_(makecmd("INCR") << key);
@@ -369,7 +472,7 @@ namespace redis
   client::int_type client::incrby(const client::string_type & key, 
                                       client::int_type by)
   {
-    send_(makecmd("INCRBY") << key << ' ' << by);
+    send_(makecmd("INCRBY") << key << by);
     return recv_int_reply_();
   }
 
@@ -382,7 +485,7 @@ namespace redis
   client::int_type client::decrby(const client::string_type & key, 
                                       client::int_type by)
   {
-    send_(makecmd("DECRBY") << key << ' ' << by);
+    send_(makecmd("DECRBY") << key << by);
     return recv_int_reply_();
   }
 
@@ -421,21 +524,21 @@ namespace redis
 
   client::string_type client::randomkey()
   {
-    send_(makecmd("RANDOMKEY", true));
+    send_( makecmd("RANDOMKEY") );
     return recv_single_line_reply_();
   }
 
   void client::rename(const client::string_type & old_name, 
                       const client::string_type & new_name)
   {
-    send_(makecmd("RENAME") << old_name << ' ' << new_name);
+    send_(makecmd("RENAME") << old_name << new_name);
     recv_ok_reply_();
   }
 
   bool client::renamenx(const client::string_type & old_name, 
                         const client::string_type & new_name)
   {
-    send_(makecmd("RENAMENX") << old_name << ' ' << new_name);
+    send_(makecmd("RENAMENX") << old_name << new_name);
     return recv_int_reply_() == 1;
   }
 
@@ -447,21 +550,27 @@ namespace redis
 
   void client::expire(const string_type & key, unsigned int secs)
   {
-    send_(makecmd("EXPIRE") << key << ' ' << secs);
+    send_(makecmd("EXPIRE") << key << secs);
     recv_int_ok_reply_();
+  }
+
+  int client::ttl(const string_type & key)
+  {
+    send_(makecmd("TTL") << key);
+    return recv_int_reply_();
   }
 
   void client::rpush(const client::string_type & key, 
                      const client::string_type & value)
   {
-    send_(makecmd("RPUSH") << key << ' ' << value.length() << CRLF << value);
+    send_(makecmd("RPUSH") << key << value);
     recv_ok_reply_();
   }
 
   void client::lpush(const client::string_type & key, 
                      const client::string_type & value)
   {
-    send_(makecmd("LPUSH") << key << ' ' << value.length() << CRLF << value);
+    send_(makecmd("LPUSH") << key << value);
     recv_ok_reply_();
   }
 
@@ -476,7 +585,7 @@ namespace redis
                                    client::int_type end,
                                    client::string_vector & out)
   {
-    send_(makecmd("LRANGE") << key << ' ' << start << ' ' << end);
+    send_(makecmd("LRANGE") << key << start << end);
     return recv_multi_bulk_reply_(out);
   }
 
@@ -484,14 +593,14 @@ namespace redis
                      client::int_type start, 
                      client::int_type end)
   {
-    send_(makecmd("LTRIM") << key << ' ' << start << ' ' << end);
+    send_(makecmd("LTRIM") << key << start << end);
     recv_ok_reply_();
   }
 
   client::string_type client::lindex(const client::string_type & key, 
                                      client::int_type index)
   {
-    send_(makecmd("LINDEX") << key << ' ' << index);
+    send_(makecmd("LINDEX") << key << index);
     return recv_bulk_reply_();
   }
 
@@ -499,7 +608,7 @@ namespace redis
                     client::int_type index, 
                     const client::string_type & value)
   {
-    send_(makecmd("LSET") << key << ' ' << index << ' ' << value.length() << CRLF << value);
+    send_(makecmd("LSET") << key << index << value);
     recv_ok_reply_();
   }
 
@@ -507,7 +616,7 @@ namespace redis
                                 client::int_type count, 
                                 const client::string_type & value)
   {
-    send_(makecmd("LREM") << key << ' ' << count << ' ' << value.length() << CRLF << value);
+    send_(makecmd("LREM") << key << count << value);
     return recv_int_reply_();
   }
 
@@ -523,17 +632,75 @@ namespace redis
     return recv_bulk_reply_();
   }
 
+  client::string_pair client::blpop(const string_vector & keys, int_type timeout)
+  {
+    makecmd m("BLPOP");
+    for(size_t i=0; i < keys.size(); i++)
+      m << keys[i];
+    m << timeout;
+    send_(m);
+    string_vector sv;
+    recv_multi_bulk_reply_(sv);
+    if(sv.size() == 2)
+      return make_pair( sv[0], sv[1] );
+    else
+      return make_pair( "", missing_value );
+  }
+
+  client::string_type client::blpop(const string_type & key, int_type timeout)
+  {
+    send_(makecmd("BLPOP") << key << timeout);
+    string_vector sv;
+    recv_multi_bulk_reply_(sv);
+    if(sv.size() == 2)
+    {
+      assert(key == sv[0]);
+      return sv[1];
+    }
+    else
+      return missing_value;
+  }
+  
+  client::string_pair client::brpop(const string_vector & keys, int_type timeout)
+  {
+    makecmd m("BRPOP");
+    for(size_t i=0; i < keys.size(); i++)
+      m << keys[i];
+    m << timeout;
+    send_(m);
+    string_vector sv;
+    recv_multi_bulk_reply_(sv);
+    if(sv.size() == 2)
+      return make_pair( sv[0], sv[1] );
+    else
+      return make_pair( "", missing_value );
+  }
+  
+  client::string_type client::brpop(const string_type & key, int_type timeout)
+  {
+    send_(makecmd("BRPOP") << key << timeout);
+    string_vector sv;
+    recv_multi_bulk_reply_(sv);
+    if(sv.size() == 2)
+    {
+      assert(key == sv[0]);
+      return sv[1];
+    }
+    else
+      return missing_value;
+  }
+
   void client::sadd(const client::string_type & key, 
                     const client::string_type & value)
   {
-    send_(makecmd("SADD") << key << ' ' << value.length() << CRLF << value);
+    send_(makecmd("SADD") << key << value);
     recv_int_ok_reply_();
   }
 
   void client::srem(const client::string_type & key, 
                     const client::string_type & value)
   {
-    send_(makecmd("SREM") << key << ' ' << value.length() << CRLF << value);
+    send_(makecmd("SREM") << key << value);
     recv_int_ok_reply_();
   }
 
@@ -541,7 +708,7 @@ namespace redis
                      const client::string_type & dstkey, 
                      const client::string_type & value)
   {
-    send_(makecmd("SMOVE") << srckey << ' ' << dstkey << ' ' << value.length() << CRLF << value);
+    send_(makecmd("SMOVE") << srckey << dstkey << value);
     recv_int_ok_reply_();
   }
 
@@ -554,7 +721,7 @@ namespace redis
   bool client::sismember(const client::string_type & key, 
                          const client::string_type & value)
   {
-    send_(makecmd("SISMEMBER") << key << ' ' << value.length() << CRLF << value);
+    send_(makecmd("SISMEMBER") << key << value);
     return recv_int_reply_() == 1;
   }
 
@@ -567,7 +734,7 @@ namespace redis
   client::int_type client::sinterstore(const client::string_type & dstkey, 
                                        const client::string_vector & keys)
   {
-    send_(makecmd("SINTERSTORE") << dstkey << ' ' << keys);
+    send_(makecmd("SINTERSTORE") << dstkey << keys);
     return recv_int_reply_();
   }
 
@@ -581,7 +748,7 @@ namespace redis
   client::int_type client::sunionstore(const client::string_type & dstkey, 
                                        const client::string_vector & keys)
   {
-    send_(makecmd("SUNIONSTORE") << dstkey << ' ' << keys);
+    send_(makecmd("SUNIONSTORE") << dstkey << keys);
     return recv_int_reply_();
   }
 
@@ -601,19 +768,19 @@ namespace redis
   void client::move(const client::string_type & key, 
                     client::int_type dbindex)
   {
-    send_(makecmd("MOVE") << key << ' ' << dbindex);
+    send_(makecmd("MOVE") << key << dbindex);
     recv_int_ok_reply_();
   }
 
   void client::flushdb()
   {
-    send_(makecmd("FLUSHDB", true));
+    send_(makecmd("FLUSHDB"));
     recv_ok_reply_();
   }
 
   void client::flushall()
   {
-    send_(makecmd("FLUSHALL", true));
+    send_(makecmd("FLUSHALL"));
     recv_ok_reply_();
   }
 
@@ -622,9 +789,13 @@ namespace redis
                                 client::sort_order order,
                                 bool lexicographically)
   {
-    send_(makecmd("SORT") << key 
-          << (order == sort_order_ascending ? " ASC" : " DESC")
-          << (lexicographically ? " ALPHA" : ""));
+    makecmd m("SORT");
+    m << key
+      << (order == sort_order_ascending ? "ASC" : "DESC");
+    if(lexicographically)
+      m << "ALPHA";
+    
+    send_(m);
 
     return recv_multi_bulk_reply_(out);
   }
@@ -636,11 +807,15 @@ namespace redis
                                 client::sort_order order,
                                 bool lexicographically)
   {
-    send_(makecmd("SORT") << key 
-          << " LIMIT " << limit_start << ' ' << limit_end 
-          << (order == sort_order_ascending ? " ASC" : " DESC")
-          << (lexicographically ? " ALPHA" : ""));
-
+    makecmd m("SORT");
+    m << key
+      << " LIMIT " << limit_start << limit_end
+      << (order == sort_order_ascending ? "ASC" : "DESC");
+    if(lexicographically)
+      m << "ALPHA";
+    
+    send_(m);
+    
     return recv_multi_bulk_reply_(out);
   }
 
@@ -656,15 +831,15 @@ namespace redis
     makecmd m("SORT");
 
     m << key 
-      << " BY "    << by_pattern
-      << " LIMIT " << limit_start << ' ' << limit_end;
+      << "BY"    << by_pattern
+      << "LIMIT" << limit_start << limit_end;
 
     client::string_vector::const_iterator it = get_patterns.begin();
     for ( ; it != get_patterns.end(); ++it) 
-      m << " GET " << *it;
+      m << "GET" << *it;
 
-    m << (order == sort_order_ascending ? " ASC" : " DESC")
-      << (lexicographically ? " ALPHA" : "");
+    m << (order == sort_order_ascending ? "ASC" : "DESC")
+      << (lexicographically ? "ALPHA" : "");
 
     send_(m);
 
@@ -673,25 +848,27 @@ namespace redis
 
   void client::save()
   {
-    send_(makecmd("SAVE", true));
+    send_(makecmd("SAVE"));
     recv_ok_reply_();
   }
 
   void client::bgsave()
   {
-    send_(makecmd("BGSAVE", true));
-    recv_ok_reply_();
+    send_(makecmd("BGSAVE"));
+    string reply = recv_single_line_reply_();
+    if(reply != status_reply_ok && reply != "Background saving started")
+      throw protocol_error("Unexpected response on bgsave: '" + reply + "'");
   }
 
   time_t client::lastsave()
   {
-    send_(makecmd("LASTSAVE", true));
+    send_(makecmd("LASTSAVE"));
     return recv_int_reply_();
   }
 
   void client::shutdown()
   {
-    send_(makecmd("SHUTDOWN", true));
+    send_(makecmd("SHUTDOWN"));
 
     // we expected to get a connection_error as redis closes the connection on shutdown command.
 
@@ -706,7 +883,7 @@ namespace redis
 
   void client::info(server_info & out)
   {
-    send_(makecmd("INFO", true));
+    send_(makecmd("INFO"));
     string response = recv_bulk_reply_();
 
     if (response.empty())
@@ -753,8 +930,14 @@ namespace redis
         out.uptime_in_days = value_from_string<unsigned long>(val);
       else if (key == server_info_key_role)
         out.role = val == server_info_value_role_master ? role_master : role_slave;
+      else if (key == server_info_key_arch_bits)
+        out.arch_bits = value_from_string<unsigned short>(val);
+      else if (key == server_info_key_multiplexing_api)
+        out.multiplexing_api = val;
+#ifndef NDEBUG // Ignore new/unknown keys in release mode
       else
-        throw protocol_error(string("unexpected info key '") + key + "'");
+        cerr << "Found unknown info key '" << key << "'" << endl;
+#endif // NDEBUG
     }
   }
 

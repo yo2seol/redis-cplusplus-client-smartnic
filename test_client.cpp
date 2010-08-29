@@ -91,10 +91,11 @@ int main()
       // TODO ... needs a conf for redis-server
     }
 
+    redis::server_info info;
+    
     test("info");
     {
       // doesn't throw? then, has valid numbers and known info-keys.
-      redis::server_info info;
       c.info(info);
     }
 
@@ -172,14 +173,14 @@ int main()
     {
       redis::client::string_vector keys;
       ASSERT_EQUAL(c.keys("*oo", keys), 2L);
-      ASSERT_EQUAL(keys.size(), 2UL);
+      ASSERT_EQUAL(keys.size(), (size_t) 2);
       ASSERT_EQUAL(keys[0], foo);
       ASSERT_EQUAL(keys[1], goo);
     }
 
     test("randomkey");
     {
-      ASSERT_GT(c.randomkey().size(), 0UL);
+      ASSERT_GT(c.randomkey().size(), (size_t) 0);
     }
 
     test("rename");
@@ -259,8 +260,8 @@ int main()
       ASSERT_EQUAL(c.exists("list1"), true);
       ASSERT_EQUAL(c.llen("list1"), 2L);
       redis::client::string_vector vals;
-      ASSERT_EQUAL(c.lrange("list1", 0, -1, vals), 2L);
-      ASSERT_EQUAL(vals.size(), 2UL);
+      ASSERT_EQUAL(c.lrange("list1", 0, -1, vals), (redis::client::int_type) 2);
+      ASSERT_EQUAL(vals.size(), (size_t) 2);
       ASSERT_EQUAL(vals[0], string("y"));
       ASSERT_EQUAL(vals[1], string("x"));
     }
@@ -271,18 +272,18 @@ int main()
       ASSERT_EQUAL(c.llen("list1"), 2L);
       redis::client::string_vector vals;
       ASSERT_EQUAL(c.lrange("list1", 0, 1, vals), 2L); // inclusive, so entire list
-      ASSERT_EQUAL(vals.size(), 2UL);
+      ASSERT_EQUAL(vals.size(), (size_t) 2);
       ASSERT_EQUAL(vals[0], string("y"));
       ASSERT_EQUAL(vals[1], string("x"));
 
       redis::client::string_vector vals2;
       ASSERT_EQUAL(c.lrange("list1", 0, 0, vals2), 1L); // inclusive, so first item
-      ASSERT_EQUAL(vals2.size(), 1UL);
+      ASSERT_EQUAL(vals2.size(), (size_t) 1);
       ASSERT_EQUAL(vals2[0], string("y"));
 
       redis::client::string_vector vals3;
       ASSERT_EQUAL(c.lrange("list1", -1, -1, vals3), 1L); // inclusive, so first item
-      ASSERT_EQUAL(vals3.size(), 1UL);
+      ASSERT_EQUAL(vals3.size(), (size_t) 1);
       ASSERT_EQUAL(vals3[0], string("x"));
     }
 
@@ -292,7 +293,7 @@ int main()
       ASSERT_EQUAL(c.llen("list1"), 2L);
       redis::client::string_vector vals;
       ASSERT_EQUAL(c.get_list("list1", vals), 2L);
-      ASSERT_EQUAL(vals.size(), 2UL);
+      ASSERT_EQUAL(vals.size(), (size_t) 2);
       ASSERT_EQUAL(vals[0], string("y"));
       ASSERT_EQUAL(vals[1], string("x"));
     }
@@ -448,7 +449,7 @@ int main()
       c.sadd("set2", "bye");
       redis::client::string_set members;
       ASSERT_EQUAL(c.smembers("set2", members), 2L);
-      ASSERT_EQUAL(members.size(), 2UL);
+      ASSERT_EQUAL(members.size(), (size_t) 2);
       ASSERT_NOT_EQUAL(members.find("hi"),  members.end());
       ASSERT_NOT_EQUAL(members.find("bye"), members.end());
     }
@@ -462,7 +463,7 @@ int main()
       keys.push_back("set3");
       redis::client::string_set intersection;
       ASSERT_EQUAL(c.sinter(keys, intersection), 1L);
-      ASSERT_EQUAL(intersection.size(), 1UL);
+      ASSERT_EQUAL(intersection.size(), (size_t) 1);
       ASSERT_NOT_EQUAL(intersection.find("bye"), intersection.end());
     }
 
@@ -484,7 +485,7 @@ int main()
 
       redis::client::string_set members;
       ASSERT_EQUAL(c.smembers("setc", members), 2L);
-      ASSERT_EQUAL(members.size(), 2UL);
+      ASSERT_EQUAL(members.size(), (size_t) 2);
       ASSERT_NOT_EQUAL(members.find("2"), members.end());
       ASSERT_NOT_EQUAL(members.find("3"), members.end());
     }
@@ -498,7 +499,7 @@ int main()
       keys.push_back("sete");
       redis::client::string_set a_union;
       ASSERT_EQUAL(c.sunion(keys, a_union), 2L);
-      ASSERT_EQUAL(a_union.size(), 2UL);
+      ASSERT_EQUAL(a_union.size(), (size_t) 2);
       ASSERT_NOT_EQUAL(a_union.find("1"), a_union.end());
       ASSERT_NOT_EQUAL(a_union.find("2"), a_union.end());
     }
@@ -516,7 +517,7 @@ int main()
 
       redis::client::string_set members;
       ASSERT_EQUAL(c.smembers("seth", members), 2L);
-      ASSERT_EQUAL(members.size(), 2UL);
+      ASSERT_EQUAL(members.size(), (size_t) 2);
       ASSERT_NOT_EQUAL(members.find("1"), members.end());
       ASSERT_NOT_EQUAL(members.find("2"), members.end());
     }
@@ -568,7 +569,7 @@ int main()
 
       redis::client::string_vector sorted;
       ASSERT_EQUAL(c.sort("sort1", sorted), 3L);
-      ASSERT_EQUAL(sorted.size(), 3UL);
+      ASSERT_EQUAL(sorted.size(), (size_t) 3);
       ASSERT_EQUAL(sorted[0], string("1"));
       ASSERT_EQUAL(sorted[1], string("2"));
       ASSERT_EQUAL(sorted[2], string("3"));
@@ -578,7 +579,7 @@ int main()
     {
       redis::client::string_vector sorted;
       ASSERT_EQUAL(c.sort("sort1", sorted, redis::client::sort_order_descending), 3L);
-      ASSERT_EQUAL(sorted.size(), 3UL);
+      ASSERT_EQUAL(sorted.size(), (size_t) 3);
       ASSERT_EQUAL(sorted[0], string("3"));
       ASSERT_EQUAL(sorted[1], string("2"));
       ASSERT_EQUAL(sorted[2], string("1"));
@@ -597,6 +598,97 @@ int main()
     test("sort with pattern and weights");
     {
       // TODO
+    }
+
+    test("shared_string");
+    {
+      redis::shared_string sh_str1(c, "sh_str1");
+
+      // Check uninitialized/missing string
+      ASSERT_EQUAL(sh_str1.exists(), false);
+      ASSERT_EQUAL(sh_str1 == redis::client::missing_value, true);
+      ASSERT_EQUAL(sh_str1 != "asdf", true);
+      
+      // Check initialized empty string
+      sh_str1 = "";
+      ASSERT_EQUAL(sh_str1.exists(), true);
+      ASSERT_EQUAL(sh_str1 == "", true);
+      ASSERT_EQUAL(sh_str1 != "asdf", true);
+      
+      // Check initialized string
+      sh_str1 = "asdf";
+      ASSERT_EQUAL(sh_str1.exists(), true);
+      ASSERT_EQUAL(sh_str1 != redis::client::missing_value, true);
+      ASSERT_EQUAL(sh_str1 != "", true);
+      ASSERT_EQUAL(sh_str1 == "asdf", true);
+
+      if(info.version[0] == '2')
+      {
+        sh_str1.append("123");
+        ASSERT_EQUAL(sh_str1 == "asdf123", true);
+        
+        sh_str1 += "456";
+        ASSERT_EQUAL(sh_str1 == "asdf123456", true);
+
+        ASSERT_EQUAL(sh_str1.substr(0, 4), string("asdf"));
+        ASSERT_EQUAL(sh_str1.substr(4, 4), string("1234"));
+      }
+      else
+        cerr << "Skipping tests for redis v2.0" << endl;
+
+      string str1 = sh_str1;
+      ASSERT_EQUAL(str1, sh_str1.str());
+
+      sh_str1.del();
+      ASSERT_EQUAL(sh_str1.exists(), false);
+      ASSERT_EQUAL(sh_str1.setnx("asdf"), true);
+      ASSERT_EQUAL(sh_str1.setnx("asdf123"), false);
+
+      cerr << "Time to life of 'sh_str1': " << sh_str1.ttl() << endl;
+      ASSERT_EQUAL(sh_str1.ttl(), -1);
+      sh_str1.expire(100);
+      int ttl = sh_str1.ttl();
+      ASSERT_EQUAL(ttl > 0, true);
+      sleep(1);
+      ASSERT_EQUAL(ttl > sh_str1.ttl(), true);
+
+      ASSERT_EQUAL(sh_str1.type(), redis::client::datatype_string);
+
+      string oldVal = sh_str1.getset("asdf123");
+      ASSERT_EQUAL(oldVal, string("asdf"));
+      ASSERT_EQUAL(sh_str1.str(), string("asdf123"));
+
+      redis::shared_string sh_str2(c, "sh_str2", "asdf123");
+      ASSERT_EQUAL(sh_str1, sh_str2);
+      sh_str2 = "asdf123456";
+      ASSERT_NOT_EQUAL(sh_str1, sh_str2);
+      sh_str1 = sh_str2;
+      ASSERT_EQUAL(sh_str1, sh_str2);
+    }
+
+    test("shared_int");
+    {
+      redis::shared_int sh_int1(c, "sh_int1", 123);
+
+      int int1 = sh_int1;
+      ASSERT_EQUAL(int1, 123);
+      ASSERT_EQUAL(sh_int1.to_int(), (redis::client::int_type) 123);
+
+      ASSERT_EQUAL(sh_int1++, (redis::client::int_type) 123);
+      ASSERT_EQUAL(++sh_int1, (redis::client::int_type) 125);
+      
+      ASSERT_EQUAL(sh_int1 == 125, true);
+      ASSERT_EQUAL(sh_int1 != 125, false);
+
+      sh_int1 -= sh_int1;
+      ASSERT_EQUAL(sh_int1.to_int(), (redis::client::int_type) 0);
+      sh_int1 += 314;
+      ASSERT_EQUAL(sh_int1 == 314, true);
+
+      redis::shared_int si(c, "si", 0);
+      redis::client::int_type i, i1 = 0;
+      while( (i = si++) < 10 )
+        ASSERT_EQUAL(i, i1++);
     }
 
     test("save");

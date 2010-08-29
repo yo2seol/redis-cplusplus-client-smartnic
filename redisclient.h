@@ -36,6 +36,8 @@
 #include <set>
 #include <stdexcept>
 #include <ctime>
+#include <boost/concept_check.hpp>
+#include <boost/lexical_cast.hpp>
 
 namespace redis 
 {
@@ -59,6 +61,8 @@ namespace redis
     unsigned long uptime_in_seconds;
     unsigned long uptime_in_days;
     server_role role;
+    unsigned short arch_bits;
+    std::string multiplexing_api;
   };
 
   // Generic error that is thrown when communicating with the redis server.
@@ -120,6 +124,8 @@ namespace redis
   public:
     typedef std::string string_type;
     typedef std::vector<string_type> string_vector;
+    typedef std::pair<string_type, string_type> string_pair;
+    typedef std::vector<string_pair> string_pair_vector;
     typedef std::set<string_type> string_set;
 
     typedef long int_type;
@@ -148,7 +154,11 @@ namespace redis
     // set a key to a string value
 
     void set(const string_type & key, const string_type & value);
-
+    
+    void mset(const string_vector & keys, const string_vector & values);
+    
+    void mset(const string_pair_vector & key_value_pairs);
+    
     // return the string value of the key
 
     string_type get(const string_type & key);
@@ -166,7 +176,17 @@ namespace redis
     // this failing if the dst key already exists.
 
     bool setnx(const string_type & key, const string_type & value);
+    
+    bool msetnx(const string_vector & keys, const string_vector & values);
+    
+    bool msetnx(const string_pair_vector & key_value_pairs);
+    
+    void setex(const string_type & key, const string_type & value, unsigned int secs);
+    
+    size_t append(const string_type & key, const string_type & value);
 
+    client::string_type substr(const string_type & key, int start, int end);
+    
     // increment the integer value of key
     // returns new value
 
@@ -243,6 +263,8 @@ namespace redis
     // NB: there's currently no generic way to remove a timeout on a key
 
     void expire(const string_type & key, unsigned int secs);
+
+    int ttl(const string_type & key);
 
     //
     // Commands operating on lists
@@ -326,6 +348,14 @@ namespace redis
 
     string_type rpop(const string_type & key);
 
+    string_pair blpop(const string_vector & keys, int_type timeout = 0);
+    
+    string_type blpop(const string_type & key, int_type timeout = 0);
+    
+    string_pair brpop(const string_vector & keys, int_type timeout = 0);
+    
+    string_type brpop(const string_type & key, int_type timeout = 0);
+    
     //
     // Commands operating on sets
     //
@@ -483,6 +513,335 @@ namespace redis
   private:
     int socket_;
   };
+
+  class shared_value
+  {
+  public:
+    shared_value(client & client_conn, const client::string_type & key)
+     : client_conn_(&client_conn),
+       key_(key)
+    {
+    }
+
+    virtual ~shared_value()
+    {
+    }
+
+    inline const client::string_type & key() const
+    {
+      return key_;
+    }
+
+    bool exists() const
+    {
+      return client_conn_->exists(key_);
+    }
+
+    void del()
+    {
+      return client_conn_->del(key_);
+    }
+
+    void rename(const client::string_type & new_name)
+    {
+      client_conn_->rename(key_, new_name);
+      key_ = new_name;
+    }
+    
+    bool renamenx(const client::string_type & new_name)
+    {
+      if( client_conn_->renamenx(key_, new_name) )
+      {
+        key_ = new_name;
+        return true;
+      }
+
+      return false;
+    }
+
+    void expire(unsigned int secs)
+    {
+      client_conn_->expire(key_, secs);
+    }
+
+    int ttl() const
+    {
+      return client_conn_->ttl(key_);
+    }
+
+    void move(client::int_type dbindex)
+    {
+      client_conn_->move(key_, dbindex);
+    }
+
+    client::datatype type() const
+    {
+      return client_conn_->type(key_);
+    }
+
+  protected:
+    redis::client* client_conn_;
+    
+  private:
+    shared_value & operator=(const shared_value &)
+    {
+      return *this;
+    }
+    
+    client::string_type key_;
+  };
+
+  class shared_string : public shared_value
+  {
+  public:
+    shared_string(client & client_conn, const client::string_type & key)
+     : shared_value(client_conn, key)
+    {
+    }
+
+    shared_string(redis::client & client_conn, const client::string_type & key, const client::string_type & default_value)
+     : shared_value(client_conn, key)
+    {
+      setnx(default_value);
+    }
+
+    operator client::string_type() const
+    {
+      return client_conn_->get(key());
+    }
+
+    inline client::string_type str() const
+    {
+      return *this;
+    }
+
+    shared_string & operator=(const client::string_type & value)
+    {
+      client_conn_->set(key(), value);
+      return *this;
+    }
+
+    shared_string & operator=(const shared_string & other_str)
+    {
+      if( key() != other_str.key() )
+        *this = other_str.str();
+      
+      return *this;
+    }
+
+    client::string_type getset(const client::string_type & new_value)
+    {
+      return client_conn_->getset(key(), new_value);
+    }
+
+    bool setnx(const client::string_type & value)
+    {
+      return client_conn_->setnx(key(), value);
+    }
+
+    void setex(const client::string_type & value, unsigned int secs)
+    {
+      client_conn_->setex(key(), value, secs);
+    }
+
+    size_t append(const client::string_type & value)
+    {
+      return client_conn_->append(key(), value);
+    }
+
+    shared_string & operator+=(const client::string_type & value)
+    {
+      append(value);
+      return *this;
+    }
+
+    client::string_type substr(int start, int end) const
+    {
+      return client_conn_->substr(key(), start, end);
+    }
+  };
+
+  class shared_int : public shared_value
+  {
+  public:
+    shared_int(client & client_conn, const client::string_type & key)
+     : shared_value(client_conn, key)
+    {
+    }
+    
+    shared_int(redis::client & client_conn, const client::string_type & key, const client::int_type & default_value)
+     : shared_value(client_conn, key)
+    {
+      setnx(default_value);
+    }
+
+    shared_int & operator=(client::int_type val)
+    {
+      client_conn_->set(key(), boost::lexical_cast<client::string_type>(val));
+      return *this;
+    }
+    
+    shared_int & operator=(const shared_int & other)
+    {
+      if(key() != other.key())
+        client_conn_->set(key(), boost::lexical_cast<client::string_type>(other.to_int()));
+      return *this;
+    }
+    
+    operator client::int_type() const
+    {
+      return to_int_type( client_conn_->get(key()) );
+    }
+
+    client::int_type to_int() const
+    {
+      return *this;
+    }
+    
+    bool setnx(const client::int_type & value)
+    {
+      return client_conn_->setnx(key(), boost::lexical_cast<client::string_type>(value) );
+    }
+    
+    void setex(const client::int_type & value, unsigned int secs)
+    {
+      client_conn_->setex(key(), boost::lexical_cast<client::string_type>(value), secs);
+    }
+    
+    client::int_type operator++()
+    {
+      return client_conn_->incr(key());
+    }
+    
+    client::int_type operator++(int)
+    {
+      return client_conn_->incr(key()) - 1;
+    }
+    
+    client::int_type operator--()
+    {
+      return client_conn_->decr(key());
+    }
+    
+    client::int_type operator--(int)
+    {
+      return client_conn_->decr(key()) + 1;
+    }
+
+    client::int_type operator+=(client::int_type val)
+    {
+      return client_conn_->incrby(key(), val);
+    }
+    
+    client::int_type operator-=(client::int_type val)
+    {
+      return client_conn_->decrby(key(), val);
+    }
+
+  private:
+    static client::int_type to_int_type(const client::string_type & val)
+    {
+      try
+      {
+        return boost::lexical_cast<client::int_type>( val );
+      }
+      catch(boost::bad_lexical_cast & e)
+      {
+        throw value_error("value is not of integer type");
+      }
+    }
+  };
+
+  class shared_list : public shared_value
+  {
+  public:
+    shared_list(client & client_conn, const client::string_type & key)
+     : shared_value(client_conn, key)
+    {
+    }
+
+    void push_back(const client::string_type & value)
+    {
+      client_conn_->rpush(key(), value);
+    }
+    
+    void push_front(const client::string_type & value)
+    {
+      client_conn_->lpush(key(), value);
+    }
+
+    client::string_type pop_back()
+    {
+      return client_conn_->rpop(key());
+    }
+
+    client::string_type blocking_pop_back(client::int_type timeout = 0)
+    {
+      return client_conn_->brpop(key(), timeout);
+    }
+
+    client::string_type pop_front()
+    {
+      return client_conn_->lpop(key());
+    }
+    
+    client::string_type blocking_pop_front(client::int_type timeout = 0)
+    {
+      return client_conn_->blpop(key(), timeout);
+    }
+    
+    size_t size() const
+    {
+      return client_conn_->llen(key());
+    }
+
+    client::string_vector range(client::int_type begin, client::int_type end) const
+    {
+      client::string_vector res;
+      client_conn_->lrange(key(), begin, end, res);
+      return res;
+    }
+
+    void trim(client::int_type begin, client::int_type end)
+    {
+      client_conn_->ltrim(key(), begin, end);
+    }
+    
+    client::string_type operator[](client::int_type index)
+    {
+      return client_conn_->lindex(key(), index);
+    }
+
+    void set(client::int_type index, const client::string_type & value)
+    {
+      client_conn_->lset(key(), index, value);
+    }
+  };
+}
+
+inline bool operator==(const redis::shared_string & sh_str, const redis::client::string_type & str)
+{
+  return sh_str.str() == str;
+}
+
+inline bool operator!=(const redis::shared_string & sh_str, const redis::client::string_type & str)
+{
+  return sh_str.str() != str;
+}
+
+template <typename ch, typename char_traits>
+std::basic_ostream<ch, char_traits>& operator<<(std::basic_ostream<ch, char_traits> & os, const redis::shared_string & sh_str)
+{
+  return os << sh_str.str();
+}
+
+template <typename ch, typename char_traits>
+std::basic_istream<ch, char_traits>& operator>>(std::basic_istream<ch, char_traits> & is, redis::shared_string & sh_str)
+{
+  redis::client::string_type s_val;
+  is >> s_val;
+  sh_str = s_val;
+  return is;
 }
 
 #endif
