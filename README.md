@@ -25,3 +25,4 @@ This client is licensed under the same license as redis.
 
 Brian Hammond <brian at fictorial dot com>   (intial 'fictorial' release)
 Ludger Sprenker <ludger at sprenker dot net> ('mrpi' release: extensions and changes for redis versions greater 1.1)
+
