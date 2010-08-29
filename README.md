@@ -21,8 +21,8 @@ Any kind of feedback, suggestions and bug reports is very welcome.
 
 This client is licensed under the same license as redis. 
 
-## Author
+## Authors
 
 Brian Hammond <brian at fictorial dot com>   (intial 'fictorial' release)
-Ludger Sprenker <ludger at sprenker dot net> ('mrpi' release: extensions and changes for redis versions greater 1.1)
 
+Ludger Sprenker <ludger at sprenker dot net> ('mrpi' release: extensions and changes for redis versions greater 1.1)
