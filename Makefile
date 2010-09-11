@@ -1,7 +1,7 @@
 # Redis C++ Client Library Makefile
 
-CFLAGS?= -pedantic -O2 -Wall -W -DNDEBUG
-#CFLAGS?= -pedantic -O0 -W -DDEBUG -g
+#CFLAGS?= -pedantic -O2 -Wall -DNEBUG -W
+CFLAGS?= -pedantic -O0 -W -DDEBUG -g
 CC = g++
 
 CLIENTOBJS = anet.o redisclient.o 
@@ -40,5 +40,5 @@ log:
 	git log '--pretty=format:%ad %s' --date=short > Changelog
 
 anet.o: anet.c fmacros.h anet.h
-redisclient.o: redisclient.cpp redisclient.h anet.h
+redisclient.o: redisclient_impl.h redisclient.h anet.h
 

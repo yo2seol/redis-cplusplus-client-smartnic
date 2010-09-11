@@ -1,6 +1,7 @@
 #include "redisclient.h"
 
 #include <iostream>
+#include <boost/date_time.hpp>
 
 using namespace std;
 
@@ -70,12 +71,166 @@ void test(const string & name)
 #endif
 }
 
+inline boost::posix_time::ptime now()
+{
+  return boost::posix_time::microsec_clock::local_time();
+}
+
+class block_duration
+{
+public:
+  explicit block_duration(const std::string & job_name, size_t count = 0)
+  : start_(now()), job_name_(job_name), count_(count)
+  {
+  }
+
+  ~block_duration()
+  {
+    boost::posix_time::ptime end = now();
+    cerr << job_name_ << " took " << (end-start_) << endl;
+    if(count_ > 0)
+    {
+      cerr << (end-start_).total_milliseconds()/(double)count_ << "ms per item" << endl;
+      cerr << (double)count_/(end-start_).total_milliseconds()*1000 << " items per second" << endl;
+    }
+  }
+
+private:
+  boost::posix_time::ptime start_;
+  std::string job_name_;
+  size_t count_;
+};
+
 int main()
 {
   try 
   {
-    redis::client c;
+    if(false)
+    {
+      vector<redis::connection_data> redis_server;
+      
+      {
+        /// DB0
+        redis::connection_data con;
+        con.port = 6379;
+        con.dbindex = 14;
+        redis_server.push_back(con);
+      }
+      {
+        /// DB1
+        redis::connection_data con;
+        con.port = 6380;
+        con.dbindex = 14;
+        redis_server.push_back(con);
+      }
+      {
+        /// DB2
+        redis::connection_data con;
+        con.port = 6381;
+        con.dbindex = 14;
+        redis_server.push_back(con);
+      }
+      {
+        /// DB3
+        redis::connection_data con;
+        con.port = 6382;
+        con.dbindex = 14;
+        redis_server.push_back(con);
+      }
+      
+      redis::client cluster(redis_server.begin(), redis_server.end());
+      cluster.flushdb();
 
+      const int TEST_SIZE = 100000;
+
+      boost::posix_time::ptime start = now();
+
+      {
+        block_duration b("Writing keys with mset", TEST_SIZE);
+        redis::client::string_pair_vector keyValuePairs;
+        for(int i=0; i < TEST_SIZE; i++)
+        {
+          stringstream ss;
+          ss << "key_" << i;
+          keyValuePairs.push_back( make_pair( ss.str(), boost::lexical_cast<string>(i) ) );
+          
+          if( keyValuePairs.size() == 250 )
+          {
+            cluster.mset( keyValuePairs );
+            keyValuePairs.clear();
+          }
+        }
+        cluster.mset( keyValuePairs );
+        keyValuePairs.clear();
+      }
+      
+      ASSERT_EQUAL( cluster.dbsize(), (redis::client::int_type) TEST_SIZE );
+
+      redis::client::int_type count;
+      for(size_t i=0; i < cluster.connections().size(); i++)
+      {
+        redis::client::int_type curSize = cluster.dbsize( cluster.connections()[i] );
+        cerr << "DB#" << i << " contains " << curSize << " keys" << endl;
+        count += curSize;
+      }
+
+      {
+        block_duration b("Reading keys with GET", TEST_SIZE);
+        redis::client::string_vector keys;
+        for(int i=0; i < TEST_SIZE; i++)
+        {
+          stringstream ss;
+          ss << "key_" << i;
+          string val = cluster.get( ss.str() );
+        }
+      }
+
+      {
+        block_duration b("Reading keys with MGET", TEST_SIZE);
+        redis::client::string_vector keys;
+        for(int i=0; i < TEST_SIZE; i++)
+        {
+          stringstream ss;
+          ss << "key_" << i;
+          keys.push_back( ss.str() );
+          
+          if( keys.size() == 250 )
+          {
+            redis::client::string_vector out;
+            cluster.mget( keys, out );
+            for(int i1=0; i1 < (int) keys.size(); i1++)
+            {
+              assert( boost::lexical_cast<int>( keys[i1].substr(4) ) == boost::lexical_cast<int>( out[i1] ) );
+              //ASSERT_EQUAL( boost::lexical_cast<int>( keys[i1].substr(4) ), boost::lexical_cast<int>( out[i1] ) );
+            }
+            keys.clear();
+          }
+        }
+        redis::client::string_vector out;
+        cluster.mget( keys, out );
+        for(int i1=0; i1 < (int) keys.size(); i1++)
+        {
+          assert( boost::lexical_cast<int>( keys[i1].substr(4) ) == boost::lexical_cast<int>( out[i1] ) );
+          //ASSERT_EQUAL( boost::lexical_cast<int>( keys[i1].substr(4) ), boost::lexical_cast<int>( out[i1] ) );
+        }
+        keys.clear();
+      }
+      
+      ASSERT_EQUAL( count, (redis::client::int_type) TEST_SIZE );
+
+      // Increment and get
+      for(int i=0; i < TEST_SIZE; i++)
+      {
+        stringstream ss;
+        ss << "key_" << i;
+        redis::shared_int sh_int(cluster, ss.str());
+        
+        ASSERT_EQUAL( (long) i+1, ++sh_int );
+      }
+    }
+
+    redis::client c;
+    
     // Test on high number databases
 
     c.select(14);
@@ -91,6 +246,60 @@ int main()
       // TODO ... needs a conf for redis-server
     }
 
+    test("binary save values");
+    {
+      int repeations = 3;
+      string bin;
+      for(int i=0; i < repeations; i++)
+      {
+        for(int i1=0; i1 <= 255; i1++)
+          bin += (char) i1;
+      }
+      c.set("binary", bin);
+      string response = c.get("binary");
+      ASSERT_EQUAL(response.size(), (size_t)repeations*256);
+      ASSERT_EQUAL(response, bin);
+
+      c.append("binary", bin);
+      ASSERT_EQUAL(c.get("binary"), bin+bin);
+
+      string second_half = c.substr("binary", bin.size(), -1);
+      ASSERT_EQUAL(second_half, bin);
+    }
+    
+    test("binary save keys");
+    {
+      string bin1 = "bin_";
+      for(int i1=0; i1 <= 127; i1++)
+        bin1 += (char) i1;
+      
+      ASSERT_EQUAL(c.exists(bin1), false);
+      c.set(bin1, "hello world");
+      ASSERT_EQUAL(c.exists(bin1), true);
+      ASSERT_EQUAL(c.get(bin1), string("hello world"));
+
+      string bin2 = "bin_";
+      for(int i1=128; i1 <= 255; i1++)
+        bin2 += (char) i1;
+      
+      ASSERT_EQUAL(c.exists(bin2), false);
+      c.set(bin2, "hello world");
+      ASSERT_EQUAL(c.exists(bin2), true);
+      ASSERT_EQUAL(c.get(bin2), string("hello world"));
+
+      redis::client::string_vector keys;
+      redis::client::int_type count = c.keys("bin_*", keys);
+      ASSERT_EQUAL(count, (redis::client::int_type) 2);
+      ASSERT_EQUAL(keys.size(), (size_t) 2);
+      if( keys[0] == bin1 )
+        ASSERT_EQUAL(keys[1], bin2);
+      else if( keys[0] == bin2 )
+        ASSERT_EQUAL(keys[1], bin1);
+      else
+        // keys[0] must be bin1 or bin2 so we must fail here
+        ASSERT_EQUAL(true, false);
+    }
+    
     redis::server_info info;
     
     test("info");
@@ -395,7 +604,7 @@ int main()
     {
       ASSERT_EQUAL(c.lpop("list1"), string("y")); 
       // list1 = []
-      ASSERT_EQUAL(c.lpop("list1"), redis::client::missing_value);
+      ASSERT_EQUAL(c.lpop("list1"), redis::client::missing_value());
     }
 
     test("rpop");
@@ -404,12 +613,13 @@ int main()
       c.rpush("list1", "world");
       ASSERT_EQUAL(c.rpop("list1"), string("world")); 
       ASSERT_EQUAL(c.rpop("list1"), string("hello")); 
-      ASSERT_EQUAL(c.lpop("list1"), redis::client::missing_value);
+      ASSERT_EQUAL(c.lpop("list1"), redis::client::missing_value());
     }
 
     test("sadd");
     {
       c.sadd("set1", "sval1");
+      c.sadd("set1", "sval2");
       ASSERT_EQUAL(c.exists("set1"), true);
       ASSERT_EQUAL(c.type("set1"), redis::client::datatype_set);
       ASSERT_EQUAL(c.sismember("set1", "sval1"), true);
@@ -435,6 +645,7 @@ int main()
 
     test("scard");
     {
+      c.srem("set1", "sval2");
       ASSERT_EQUAL(c.scard("set1"), 0L);
       ASSERT_EQUAL(c.scard("set2"), 1L);
     }
@@ -606,7 +817,7 @@ int main()
 
       // Check uninitialized/missing string
       ASSERT_EQUAL(sh_str1.exists(), false);
-      ASSERT_EQUAL(sh_str1 == redis::client::missing_value, true);
+      ASSERT_EQUAL(sh_str1 == redis::client::missing_value(), true);
       ASSERT_EQUAL(sh_str1 != "asdf", true);
       
       // Check initialized empty string
@@ -618,7 +829,7 @@ int main()
       // Check initialized string
       sh_str1 = "asdf";
       ASSERT_EQUAL(sh_str1.exists(), true);
-      ASSERT_EQUAL(sh_str1 != redis::client::missing_value, true);
+      ASSERT_EQUAL(sh_str1 != redis::client::missing_value(), true);
       ASSERT_EQUAL(sh_str1 != "", true);
       ASSERT_EQUAL(sh_str1 == "asdf", true);
 
@@ -630,8 +841,8 @@ int main()
         sh_str1 += "456";
         ASSERT_EQUAL(sh_str1 == "asdf123456", true);
 
-        ASSERT_EQUAL(sh_str1.substr(0, 4), string("asdf"));
-        ASSERT_EQUAL(sh_str1.substr(4, 4), string("1234"));
+        ASSERT_EQUAL(sh_str1.substr(0, 3), string("asdf"));
+        ASSERT_EQUAL(sh_str1.substr(4, 7), string("1234"));
       }
       else
         cerr << "Skipping tests for redis v2.0" << endl;
