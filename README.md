@@ -1,9 +1,9 @@
 # A C++ client for Redis 
 
-- This client has no external dependencies 
-- It has been tested with g++ on Mac OS X 10.5 and Linux
+- Depends on c++ boost library
 - It uses anet from Redis itself
-- Depends on c++ boost library (new in the 'mrpi' release)
+- It has been tested with g++ on Linux (and older versions also on Mac OS X 10.5)
+- Consistent hashing (with support for user-specified algorithm),
 
 ## Status
 

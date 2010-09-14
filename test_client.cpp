@@ -3,241 +3,45 @@
 #include <iostream>
 #include <boost/date_time.hpp>
 
-using namespace std;
+#include "tests/functions.h"
 
-#define ASSERT_EQUAL(x,y) assert_equal(x, y, __LINE__)
-#define ASSERT_NOT_EQUAL(x,y) assert_not_equal(x, y, __LINE__)
-#define ASSERT_GT(x,y) assert_gt(x, y, __LINE__)
+boost::shared_ptr<redis::client> init_cluster_client();
 
-template <typename T>
-void assert_equal(const T & actual, const T & expected, int lineno)
-{
-#ifndef NDEBUG
-  cerr << "assert_equal('" << expected << "', '" << actual << "')" << endl;
-#endif
+// Low level API
+void test_lists(redis::client & c);
+void test_sets(redis::client & c);
+void test_zsets(redis::client & c);
 
-  if (expected != actual)
-  {
-    cerr << "expected '" << expected << "' got '" << actual << "'" << endl
-         << "failing test called from line " << lineno << endl;
-    
-    exit(1);
-  }
+// High level API
+void test_shared_strings(redis::client & c);
+void test_shared_ints(redis::client & c);
 
-#ifndef NDEBUG
-  cerr << "... OK" << endl;
-#endif
-}
-
-template <typename T>
-void assert_not_equal(const T & a, const T & b, int lineno)
-{
-  if (a == b)
-  {
-    cerr << "expected inequality" << endl
-         << "failing test called from line " << lineno << endl;
-    
-    exit(1);
-  }
-}
-
-template <typename T>
-void assert_gt(const T & a, const T & b, int lineno)
-{
-#ifndef NDEBUG
-  cerr << "assert_gt('" << a << "', '" << b << "')" << endl;
-#endif
-
-  if (a <= b)
-  {
-    cerr << "expected '" << a << "' > '" << b << "'" << endl
-         << "failing test called from line " << lineno << endl;
-    
-    exit(1);
-  }
-
-#ifndef NDEBUG
-  cerr << "... OK" << endl;
-#endif
-}
-
-void test(const string & name)
-{
-#ifndef NDEBUG
-  cerr << "------------------------------" << endl
-       << "starting test: "                << name << endl;
-#else
-  (void) name;
-#endif
-}
-
-inline boost::posix_time::ptime now()
-{
-  return boost::posix_time::microsec_clock::local_time();
-}
-
-class block_duration
-{
-public:
-  explicit block_duration(const std::string & job_name, size_t count = 0)
-  : start_(now()), job_name_(job_name), count_(count)
-  {
-  }
-
-  ~block_duration()
-  {
-    boost::posix_time::ptime end = now();
-    cerr << job_name_ << " took " << (end-start_) << endl;
-    if(count_ > 0)
-    {
-      cerr << (end-start_).total_milliseconds()/(double)count_ << "ms per item" << endl;
-      cerr << (double)count_/(end-start_).total_milliseconds()*1000 << " items per second" << endl;
-    }
-  }
-
-private:
-  boost::posix_time::ptime start_;
-  std::string job_name_;
-  size_t count_;
-};
+void test_cluster();
+void benchmark(redis::client & c, int TEST_SIZE);
 
 int main()
 {
   try 
   {
-    if(false)
-    {
-      vector<redis::connection_data> redis_server;
+    bool CLUSTER_MODE = true;
+    boost::shared_ptr<redis::client> shared_c;
+    
+    if(CLUSTER_MODE)
+      shared_c = init_cluster_client();
+    else
+      shared_c = boost::shared_ptr<redis::client>( new redis::client );
       
-      {
-        /// DB0
-        redis::connection_data con;
-        con.port = 6379;
-        con.dbindex = 14;
-        redis_server.push_back(con);
-      }
-      {
-        /// DB1
-        redis::connection_data con;
-        con.port = 6380;
-        con.dbindex = 14;
-        redis_server.push_back(con);
-      }
-      {
-        /// DB2
-        redis::connection_data con;
-        con.port = 6381;
-        con.dbindex = 14;
-        redis_server.push_back(con);
-      }
-      {
-        /// DB3
-        redis::connection_data con;
-        con.port = 6382;
-        con.dbindex = 14;
-        redis_server.push_back(con);
-      }
-      
-      redis::client cluster(redis_server.begin(), redis_server.end());
-      cluster.flushdb();
-
-      const int TEST_SIZE = 100000;
-
-      boost::posix_time::ptime start = now();
-
-      {
-        block_duration b("Writing keys with mset", TEST_SIZE);
-        redis::client::string_pair_vector keyValuePairs;
-        for(int i=0; i < TEST_SIZE; i++)
-        {
-          stringstream ss;
-          ss << "key_" << i;
-          keyValuePairs.push_back( make_pair( ss.str(), boost::lexical_cast<string>(i) ) );
-          
-          if( keyValuePairs.size() == 250 )
-          {
-            cluster.mset( keyValuePairs );
-            keyValuePairs.clear();
-          }
-        }
-        cluster.mset( keyValuePairs );
-        keyValuePairs.clear();
-      }
-      
-      ASSERT_EQUAL( cluster.dbsize(), (redis::client::int_type) TEST_SIZE );
-
-      redis::client::int_type count;
-      for(size_t i=0; i < cluster.connections().size(); i++)
-      {
-        redis::client::int_type curSize = cluster.dbsize( cluster.connections()[i] );
-        cerr << "DB#" << i << " contains " << curSize << " keys" << endl;
-        count += curSize;
-      }
-
-      {
-        block_duration b("Reading keys with GET", TEST_SIZE);
-        redis::client::string_vector keys;
-        for(int i=0; i < TEST_SIZE; i++)
-        {
-          stringstream ss;
-          ss << "key_" << i;
-          string val = cluster.get( ss.str() );
-        }
-      }
-
-      {
-        block_duration b("Reading keys with MGET", TEST_SIZE);
-        redis::client::string_vector keys;
-        for(int i=0; i < TEST_SIZE; i++)
-        {
-          stringstream ss;
-          ss << "key_" << i;
-          keys.push_back( ss.str() );
-          
-          if( keys.size() == 250 )
-          {
-            redis::client::string_vector out;
-            cluster.mget( keys, out );
-            for(int i1=0; i1 < (int) keys.size(); i1++)
-            {
-              assert( boost::lexical_cast<int>( keys[i1].substr(4) ) == boost::lexical_cast<int>( out[i1] ) );
-              //ASSERT_EQUAL( boost::lexical_cast<int>( keys[i1].substr(4) ), boost::lexical_cast<int>( out[i1] ) );
-            }
-            keys.clear();
-          }
-        }
-        redis::client::string_vector out;
-        cluster.mget( keys, out );
-        for(int i1=0; i1 < (int) keys.size(); i1++)
-        {
-          assert( boost::lexical_cast<int>( keys[i1].substr(4) ) == boost::lexical_cast<int>( out[i1] ) );
-          //ASSERT_EQUAL( boost::lexical_cast<int>( keys[i1].substr(4) ), boost::lexical_cast<int>( out[i1] ) );
-        }
-        keys.clear();
-      }
-      
-      ASSERT_EQUAL( count, (redis::client::int_type) TEST_SIZE );
-
-      // Increment and get
-      for(int i=0; i < TEST_SIZE; i++)
-      {
-        stringstream ss;
-        ss << "key_" << i;
-        redis::shared_int sh_int(cluster, ss.str());
-        
-        ASSERT_EQUAL( (long) i+1, ++sh_int );
-      }
-    }
-
-    redis::client c;
+    redis::client & c = *shared_c;
     
     // Test on high number databases
 
     c.select(14);
     c.flushdb();
+    ASSERT_EQUAL(c.dbsize(), (redis::client::int_type) 0);
 
     c.select(15);
     c.flushdb();
+    ASSERT_EQUAL(c.dbsize(), (redis::client::int_type) 0);
 
     string foo("foo"), bar("bar"), baz("baz"), buz("buz"), goo("goo");
 
@@ -428,311 +232,16 @@ int main()
       ASSERT_EQUAL(c.exists("goo"), false);
     }
 
-    test("rpush");
-    {
-      ASSERT_EQUAL(c.exists("list1"), false);
-      c.rpush("list1", "val1");
-      ASSERT_EQUAL(c.llen("list1"), 1L);
-      ASSERT_EQUAL(c.type("list1"), redis::client::datatype_list);
-      c.rpush("list1", "val2");
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-      ASSERT_EQUAL(c.lindex("list1", 0), string("val1"));
-      ASSERT_EQUAL(c.lindex("list1", 1), string("val2"));
-    }
+    test_lists(c);
+    test_sets(c);
+    test_zsets(c);
 
-    test("lpush");
-    {
-      c.del("list1");
-      ASSERT_EQUAL(c.exists("list1"), false);
-      c.lpush("list1", "val1");
-      ASSERT_EQUAL(c.type("list1"), redis::client::datatype_list);
-      ASSERT_EQUAL(c.llen("list1"), 1L);
-      c.lpush("list1", "val2");
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-      ASSERT_EQUAL(c.lindex("list1", 0), string("val2"));
-      ASSERT_EQUAL(c.lindex("list1", 1), string("val1"));
-    }
+    test_shared_strings(c);
+    test_shared_ints(c);
+    
 
-    test("llen");
-    {
-      c.del("list1");
-      ASSERT_EQUAL(c.exists("list1"), false);
-      ASSERT_EQUAL(c.llen("list1"), 0L);
-      c.lpush("list1", "x");
-      ASSERT_EQUAL(c.llen("list1"), 1L);
-      c.lpush("list1", "y");
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-    }
-
-    test("lrange");
-    {
-      ASSERT_EQUAL(c.exists("list1"), true);
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-      redis::client::string_vector vals;
-      ASSERT_EQUAL(c.lrange("list1", 0, -1, vals), (redis::client::int_type) 2);
-      ASSERT_EQUAL(vals.size(), (size_t) 2);
-      ASSERT_EQUAL(vals[0], string("y"));
-      ASSERT_EQUAL(vals[1], string("x"));
-    }
-
-    test("lrange with subset of full list");
-    {
-      ASSERT_EQUAL(c.exists("list1"), true);
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-      redis::client::string_vector vals;
-      ASSERT_EQUAL(c.lrange("list1", 0, 1, vals), 2L); // inclusive, so entire list
-      ASSERT_EQUAL(vals.size(), (size_t) 2);
-      ASSERT_EQUAL(vals[0], string("y"));
-      ASSERT_EQUAL(vals[1], string("x"));
-
-      redis::client::string_vector vals2;
-      ASSERT_EQUAL(c.lrange("list1", 0, 0, vals2), 1L); // inclusive, so first item
-      ASSERT_EQUAL(vals2.size(), (size_t) 1);
-      ASSERT_EQUAL(vals2[0], string("y"));
-
-      redis::client::string_vector vals3;
-      ASSERT_EQUAL(c.lrange("list1", -1, -1, vals3), 1L); // inclusive, so first item
-      ASSERT_EQUAL(vals3.size(), (size_t) 1);
-      ASSERT_EQUAL(vals3[0], string("x"));
-    }
-
-    test("get_list");
-    {
-      ASSERT_EQUAL(c.exists("list1"), true);
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-      redis::client::string_vector vals;
-      ASSERT_EQUAL(c.get_list("list1", vals), 2L);
-      ASSERT_EQUAL(vals.size(), (size_t) 2);
-      ASSERT_EQUAL(vals[0], string("y"));
-      ASSERT_EQUAL(vals[1], string("x"));
-    }
-
-    test("ltrim");
-    {
-      ASSERT_EQUAL(c.exists("list1"), true);
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-      c.ltrim("list1", 0, 0);
-      ASSERT_EQUAL(c.exists("list1"), true);
-      ASSERT_EQUAL(c.llen("list1"), 1L);
-      redis::client::string_vector vals;
-      ASSERT_EQUAL(c.get_list("list1", vals), 1L);
-      ASSERT_EQUAL(vals[0], string("y"));
-    }
-
-    test("lindex");
-    {
-      ASSERT_EQUAL(c.lindex("list1", 0), string("y"));
-      c.rpush("list1", "x");
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-      ASSERT_EQUAL(c.lindex("list1", -1), string("x"));
-      ASSERT_EQUAL(c.lindex("list1", 1), string("x"));
-    }
-
-    test("lset");
-    {
-      c.lset("list1", 1, "z");
-      ASSERT_EQUAL(c.lindex("list1", 1), string("z"));
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-    }
-
-    test("lrem");
-    {
-      c.lrem("list1", 1, "z");
-      ASSERT_EQUAL(c.llen("list1"), 1L);
-      ASSERT_EQUAL(c.lindex("list1", 0), string("y"));
-
-      // list1 = [ y ]
-      ASSERT_EQUAL(c.lrem("list1", 0, "q"), 0L);
-
-      c.rpush("list1", "z");
-      c.rpush("list1", "z");
-      c.rpush("list1", "z");
-      c.rpush("list1", "a");     
-      // list1 = [ y, z, z, z, a ]
-      ASSERT_EQUAL(c.lrem("list1", 2, "z"), 2L);
-      // list1 = [ y, z, a ]
-      ASSERT_EQUAL(c.llen("list1"), 3L);
-      ASSERT_EQUAL(c.lindex("list1", 0), string("y"));
-      ASSERT_EQUAL(c.lindex("list1", 1), string("z"));
-      ASSERT_EQUAL(c.lindex("list1", 2), string("a"));
-
-      c.rpush("list1", "z");
-      // list1 = [ y, z, a, z ]
-      ASSERT_EQUAL(c.lrem("list1", -1, "z"), 1L);  // <0 => rm R to L 
-      // list1 = [ y, z, a ]
-      ASSERT_EQUAL(c.llen("list1"), 3L);
-      ASSERT_EQUAL(c.lindex("list1", 0), string("y"));
-      ASSERT_EQUAL(c.lindex("list1", 1), string("z"));
-      ASSERT_EQUAL(c.lindex("list1", 2), string("a"));
-
-      // list1 = [ y, z, a ]
-      // try to remove 5 'a's but there's only 1 ... no problem.
-      ASSERT_EQUAL(c.lrem("list1", 5, "a"), 1L);
-      // list1 = [ y, z ]
-      ASSERT_EQUAL(c.llen("list1"), 2L);
-      ASSERT_EQUAL(c.lindex("list1", 0), string("y"));
-      ASSERT_EQUAL(c.lindex("list1", 1), string("z"));
-    }
-
-    test("lrem_exact");
-    {
-      // list1 = [ y, z ]
-
-      // try to remove 5 'z's but there's only 1 ... now it's a problem.
-
-      bool threw = false;
-
-      try 
-      {
-        c.lrem_exact("list1", 5, "z");
-      }
-      catch (redis::value_error & e)
-      {
-        threw = true;
-      }
-
-      ASSERT_EQUAL(threw, true);
-
-      // This DOES remove the one 'z' though
-      // list1 = [ y ]
-
-      ASSERT_EQUAL(c.llen("list1"), 1L);
-      ASSERT_EQUAL(c.lindex("list1", 0), string("y"));
-    }
-
-    test("lpop");
-    {
-      ASSERT_EQUAL(c.lpop("list1"), string("y")); 
-      // list1 = []
-      ASSERT_EQUAL(c.lpop("list1"), redis::client::missing_value());
-    }
-
-    test("rpop");
-    {
-      c.rpush("list1", "hello");
-      c.rpush("list1", "world");
-      ASSERT_EQUAL(c.rpop("list1"), string("world")); 
-      ASSERT_EQUAL(c.rpop("list1"), string("hello")); 
-      ASSERT_EQUAL(c.lpop("list1"), redis::client::missing_value());
-    }
-
-    test("sadd");
-    {
-      c.sadd("set1", "sval1");
-      c.sadd("set1", "sval2");
-      ASSERT_EQUAL(c.exists("set1"), true);
-      ASSERT_EQUAL(c.type("set1"), redis::client::datatype_set);
-      ASSERT_EQUAL(c.sismember("set1", "sval1"), true);
-    }
-
-    test("srem");
-    {
-      c.srem("set1", "sval1");
-      ASSERT_EQUAL(c.exists("set1"), true);
-      ASSERT_EQUAL(c.type("set1"), redis::client::datatype_set);
-      ASSERT_EQUAL(c.sismember("set1", "sval1"), false);
-    }
-
-    test("smove");
-    {
-      c.sadd("set1", "hi");
-      // set1 = { hi }
-      ASSERT_EQUAL(c.exists("set2"), false);
-      c.smove("set1", "set2", "hi");
-      ASSERT_EQUAL(c.sismember("set1", "hi"), false);
-      ASSERT_EQUAL(c.sismember("set2", "hi"), true); 
-    }
-
-    test("scard");
-    {
-      c.srem("set1", "sval2");
-      ASSERT_EQUAL(c.scard("set1"), 0L);
-      ASSERT_EQUAL(c.scard("set2"), 1L);
-    }
-
-    test("sismember");
-    {
-      // see above
-    }
-
-    test("smembers");
-    {
-      c.sadd("set2", "bye");
-      redis::client::string_set members;
-      ASSERT_EQUAL(c.smembers("set2", members), 2L);
-      ASSERT_EQUAL(members.size(), (size_t) 2);
-      ASSERT_NOT_EQUAL(members.find("hi"),  members.end());
-      ASSERT_NOT_EQUAL(members.find("bye"), members.end());
-    }
-
-    test("sinter");
-    {
-      c.sadd("set3", "bye");
-      c.sadd("set3", "bye2");
-      redis::client::string_vector keys;
-      keys.push_back("set2");
-      keys.push_back("set3");
-      redis::client::string_set intersection;
-      ASSERT_EQUAL(c.sinter(keys, intersection), 1L);
-      ASSERT_EQUAL(intersection.size(), (size_t) 1);
-      ASSERT_NOT_EQUAL(intersection.find("bye"), intersection.end());
-    }
-
-    test("sinterstore");
-    {
-      c.sadd("seta", "1");
-      c.sadd("seta", "2");
-      c.sadd("seta", "3");
-
-      c.sadd("setb", "2");
-      c.sadd("setb", "3");
-      c.sadd("setb", "4");
-
-      redis::client::string_vector keys;
-      keys.push_back("seta");
-      keys.push_back("setb");
-
-      ASSERT_EQUAL(c.sinterstore("setc", keys), 2L);
-
-      redis::client::string_set members;
-      ASSERT_EQUAL(c.smembers("setc", members), 2L);
-      ASSERT_EQUAL(members.size(), (size_t) 2);
-      ASSERT_NOT_EQUAL(members.find("2"), members.end());
-      ASSERT_NOT_EQUAL(members.find("3"), members.end());
-    }
-
-    test("sunion");
-    {
-      c.sadd("setd", "1");
-      c.sadd("sete", "2");
-      redis::client::string_vector keys;
-      keys.push_back("setd");
-      keys.push_back("sete");
-      redis::client::string_set a_union;
-      ASSERT_EQUAL(c.sunion(keys, a_union), 2L);
-      ASSERT_EQUAL(a_union.size(), (size_t) 2);
-      ASSERT_NOT_EQUAL(a_union.find("1"), a_union.end());
-      ASSERT_NOT_EQUAL(a_union.find("2"), a_union.end());
-    }
-
-    test("sunionstore");
-    {
-      c.sadd("setf", "1");
-      c.sadd("setg", "2");
-
-      redis::client::string_vector keys;
-      keys.push_back("setf");
-      keys.push_back("setg");
-
-      ASSERT_EQUAL(c.sunionstore("seth", keys), 2L);
-
-      redis::client::string_set members;
-      ASSERT_EQUAL(c.smembers("seth", members), 2L);
-      ASSERT_EQUAL(members.size(), (size_t) 2);
-      ASSERT_NOT_EQUAL(members.find("1"), members.end());
-      ASSERT_NOT_EQUAL(members.find("2"), members.end());
-    }
-
+    benchmark(c, 10000);
+    
     test("move");
     {
       c.select(14);
@@ -811,96 +320,6 @@ int main()
       // TODO
     }
 
-    test("shared_string");
-    {
-      redis::shared_string sh_str1(c, "sh_str1");
-
-      // Check uninitialized/missing string
-      ASSERT_EQUAL(sh_str1.exists(), false);
-      ASSERT_EQUAL(sh_str1 == redis::client::missing_value(), true);
-      ASSERT_EQUAL(sh_str1 != "asdf", true);
-      
-      // Check initialized empty string
-      sh_str1 = "";
-      ASSERT_EQUAL(sh_str1.exists(), true);
-      ASSERT_EQUAL(sh_str1 == "", true);
-      ASSERT_EQUAL(sh_str1 != "asdf", true);
-      
-      // Check initialized string
-      sh_str1 = "asdf";
-      ASSERT_EQUAL(sh_str1.exists(), true);
-      ASSERT_EQUAL(sh_str1 != redis::client::missing_value(), true);
-      ASSERT_EQUAL(sh_str1 != "", true);
-      ASSERT_EQUAL(sh_str1 == "asdf", true);
-
-      if(info.version[0] == '2')
-      {
-        sh_str1.append("123");
-        ASSERT_EQUAL(sh_str1 == "asdf123", true);
-        
-        sh_str1 += "456";
-        ASSERT_EQUAL(sh_str1 == "asdf123456", true);
-
-        ASSERT_EQUAL(sh_str1.substr(0, 3), string("asdf"));
-        ASSERT_EQUAL(sh_str1.substr(4, 7), string("1234"));
-      }
-      else
-        cerr << "Skipping tests for redis v2.0" << endl;
-
-      string str1 = sh_str1;
-      ASSERT_EQUAL(str1, sh_str1.str());
-
-      sh_str1.del();
-      ASSERT_EQUAL(sh_str1.exists(), false);
-      ASSERT_EQUAL(sh_str1.setnx("asdf"), true);
-      ASSERT_EQUAL(sh_str1.setnx("asdf123"), false);
-
-      cerr << "Time to life of 'sh_str1': " << sh_str1.ttl() << endl;
-      ASSERT_EQUAL(sh_str1.ttl(), -1);
-      sh_str1.expire(100);
-      int ttl = sh_str1.ttl();
-      ASSERT_EQUAL(ttl > 0, true);
-      sleep(1);
-      ASSERT_EQUAL(ttl > sh_str1.ttl(), true);
-
-      ASSERT_EQUAL(sh_str1.type(), redis::client::datatype_string);
-
-      string oldVal = sh_str1.getset("asdf123");
-      ASSERT_EQUAL(oldVal, string("asdf"));
-      ASSERT_EQUAL(sh_str1.str(), string("asdf123"));
-
-      redis::shared_string sh_str2(c, "sh_str2", "asdf123");
-      ASSERT_EQUAL(sh_str1, sh_str2);
-      sh_str2 = "asdf123456";
-      ASSERT_NOT_EQUAL(sh_str1, sh_str2);
-      sh_str1 = sh_str2;
-      ASSERT_EQUAL(sh_str1, sh_str2);
-    }
-
-    test("shared_int");
-    {
-      redis::shared_int sh_int1(c, "sh_int1", 123);
-
-      int int1 = sh_int1;
-      ASSERT_EQUAL(int1, 123);
-      ASSERT_EQUAL(sh_int1.to_int(), (redis::client::int_type) 123);
-
-      ASSERT_EQUAL(sh_int1++, (redis::client::int_type) 123);
-      ASSERT_EQUAL(++sh_int1, (redis::client::int_type) 125);
-      
-      ASSERT_EQUAL(sh_int1 == 125, true);
-      ASSERT_EQUAL(sh_int1 != 125, false);
-
-      sh_int1 -= sh_int1;
-      ASSERT_EQUAL(sh_int1.to_int(), (redis::client::int_type) 0);
-      sh_int1 += 314;
-      ASSERT_EQUAL(sh_int1 == 314, true);
-
-      redis::shared_int si(c, "si", 0);
-      redis::client::int_type i, i1 = 0;
-      while( (i = si++) < 10 )
-        ASSERT_EQUAL(i, i1++);
-    }
 
     test("save");
     {
@@ -925,7 +344,7 @@ int main()
   } 
   catch (redis::redis_error & e) 
   {
-    cerr << "got exception: " << string(e) << endl << "FAIL" << endl;
+    cerr << "got exception: " << e.what() << endl << "FAIL" << endl;
     return 1;
   }
 

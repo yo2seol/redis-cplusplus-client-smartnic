@@ -1,14 +1,16 @@
 # Redis C++ Client Library Makefile
 
+VPATH = tests
+
 #CFLAGS?= -pedantic -O2 -Wall -DNEBUG -W
 CFLAGS?= -pedantic -O0 -W -DDEBUG -g
 CC = g++
 
-CLIENTOBJS = anet.o redisclient.o 
+CLIENTOBJS = anet.o
 LIBNAME = libredisclient.a
 
 TESTAPP = test_client
-TESTAPPOBJS = test_client.o
+TESTAPPOBJS = test_client.o test_lists.o test_sets.o test_zsets.o test_cluster.o test_shared_strings.o test_shared_ints.o benchmark.o functions.o
 TESTAPPLIBS = $(LIBNAME) -lstdc++
 
 all: $(LIBNAME) $(TESTAPP)
@@ -39,6 +41,12 @@ dep:
 log:
 	git log '--pretty=format:%ad %s' --date=short > Changelog
 
-anet.o: anet.c fmacros.h anet.h
-redisclient.o: redisclient_impl.h redisclient.h anet.h
-
+anet.o:                anet.c fmacros.h anet.h
+test_client.o:         redisclient.h test_client.cpp tests/functions.h
+test_lists.o:          redisclient.h tests/test_lists.cpp tests/functions.h
+test_sets.o:           redisclient.h tests/test_sets.cpp tests/functions.h
+test_zsets.o:          redisclient.h tests/test_zsets.cpp tests/functions.h
+test_cluster.o:        redisclient.h tests/test_cluster.cpp tests/functions.h
+test_shared_strings.o: redisclient.h tests/test_shared_strings.cpp tests/functions.h
+test_shared_ints.o:    redisclient.h tests/test_shared_ints.cpp tests/functions.h
+benchmark.o:           redisclient.h tests/benchmark.cpp tests/functions.h

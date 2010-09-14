@@ -92,59 +92,19 @@ namespace redis
     role_slave
   };
   
-#ifndef NDEBUG
-  void output_proto_debug(const std::string & data, bool is_received = true)
-  {
-    std::string escaped_data(data);
-    size_t pos;
-    while ((pos = escaped_data.find("\n")) != std::string::npos)
-      escaped_data.replace(pos, 1, "\\n");
-    while ((pos = escaped_data.find("\r")) != std::string::npos)
-      escaped_data.replace(pos, 1, "\\r");
-    
-    std::cerr << time(NULL) << ": "
-              << (is_received ? "RECV '" : "SEND '")
-              << escaped_data
-              << "'"
-              << std::endl;
-  }
-#endif
-  
-  std::vector<std::string>::size_type split(const std::string & str, char delim, std::vector<std::string> & elems)
-  {
-    std::stringstream ss(str);
-    std::string item;
-    std::vector<std::string>::size_type n = 0;
-    while (getline(ss, item, delim))
-    {
-      elems.push_back(item);
-      ++n;
-    }
-    return n;
-  }
-  
-  inline std::string & rtrim(std::string & str, const std::string & ws = REDIS_WHITESPACE)
-  {
-    std::string::size_type pos = str.find_last_not_of(ws);
-    str.erase(pos + 1);
-    return str;
-  }
-  
-  inline void split_lines(const std::string & str, std::vector<std::string> & elems)
-  {
-    split(str, '\n', elems);
-    for (std::vector<std::string>::iterator it = elems.begin(); it != elems.end(); ++it)
-      rtrim(*it);
-  }
-  
   // Generic error that is thrown when communicating with the redis server.
   
-  class redis_error
+  class redis_error : public std::exception
   {
   public:
-    redis_error(const std::string & err);
-    operator std::string ();
-    operator const std::string () const;
+    redis_error(const std::string & err) : err_(err) {}
+    virtual ~redis_error() throw () {}
+    operator const std::string () const { return err_; }
+    virtual const char* what() const throw ()
+    {
+      return err_.c_str();
+    }
+    
   private:
     std::string err_;
   };
@@ -154,7 +114,7 @@ namespace redis
   class connection_error : public redis_error
   {
   public:
-    connection_error(const std::string & err);
+    connection_error(const std::string & err) : redis_error(err) {}
   };
   
   // Redis gave us a reply we were not expecting.
@@ -163,7 +123,7 @@ namespace redis
   class protocol_error : public redis_error
   {
   public:
-    protocol_error(const std::string & err);
+    protocol_error(const std::string & err) : redis_error(err) {};
   };
   
   // A key that you expected to exist does not in fact exist.
@@ -171,7 +131,7 @@ namespace redis
   class key_error : public redis_error
   {
   public:
-    key_error(const std::string & err);
+    key_error(const std::string & err) : redis_error(err) {};
   };
   
   // A value of an expected type or other semantics was found to be invalid.
@@ -179,103 +139,8 @@ namespace redis
   class value_error : public redis_error
   {
   public:
-    value_error(const std::string & err);
+    value_error(const std::string & err) : redis_error(err) {};
   };
-  // Reads N bytes from given blocking socket.
-  
-  std::string read_n(int socket, ssize_t n)
-  {
-    char * buffer = new char[n + 1];
-    buffer[n] = '\0';
-    
-    char * bp = buffer;
-    ssize_t bytes_read = 0;
-    
-    while (bytes_read != n)
-    {
-      ssize_t bytes_received = 0;
-      do
-        bytes_received = recv(socket, bp, n - (bp - buffer), 0);
-      while(bytes_received < 0 && errno == EINTR);
-      
-      if (bytes_received == 0)
-        throw redis::connection_error("connection was closed");
-      
-      bytes_read += bytes_received;
-      bp         += bytes_received;
-    }
-    
-    std::string str(buffer, n);
-    delete [] buffer;
-    return str;
-  }
-  
-  // Reads a single line of character data from the given blocking socket.
-  // Returns the line that was read, not including EOL delimiter(s).  Both LF
-  // ('\n') and CRLF ("\r\n") delimiters are supported.  If there was an I/O
-  // error reading from the socket, connection_error is raised.  If max_size
-  // bytes are read before finding an EOL delimiter, a blank string is
-  // returned.
-  
-  std::string read_line(int socket, ssize_t max_size = 2048)
-  {
-    assert(socket > 0);
-    assert(max_size > 0);
-    
-    std::ostringstream oss;
-    
-    enum { buffer_size = 64 };
-    char buffer[buffer_size];
-    memset(buffer, 0, buffer_size);
-    
-    ssize_t total_bytes_read = 0;
-    bool found_delimiter = false;
-    
-    while (total_bytes_read < max_size && !found_delimiter)
-    {
-      // Peek at what's available.
-      
-      ssize_t bytes_received = 0;
-      do
-        bytes_received = recv(socket, buffer, buffer_size, MSG_PEEK);
-      while(bytes_received < 0 && errno == EINTR);
-      
-      if (bytes_received == 0)
-        throw connection_error("connection was closed");
-      
-      // Some data is available; Length might be < buffer_size.
-      // Look for newline in whatever was read though.
-      
-      char * eol = static_cast<char *>(memchr(buffer, '\n', bytes_received));
-      
-      // If found, write data from the buffer to the output string.
-      // Else, write the entire buffer and continue reading more data.
-      
-      ssize_t to_read = bytes_received;
-      
-      if (eol)
-      {
-        to_read = eol - buffer + 1;
-        oss.write(buffer, to_read);
-        found_delimiter = true;
-      }
-      else
-        oss.write(buffer, bytes_received);
-      
-      // Now read from the socket to remove the peeked data from the socket's
-        // read buffer.  This will not block since we've peeked already and know
-        // there's data waiting.  It might fail if we were interrupted however.
-        
-        do
-          bytes_received = recv(socket, buffer, to_read, 0);
-        while(bytes_received < 0 && errno == EINTR);
-    }
-    
-    // Construct final line string. Remove trailing CRLF-based whitespace.
-    
-    std::string line = oss.str();
-    return rtrim(line, REDIS_LBR);
-  }
   
   class makecmd
   {
@@ -382,7 +247,11 @@ namespace redis
       char err[ANET_ERR_LEN];
       con.socket = anetTcpConnect(err, const_cast<char*>(con.host.c_str()), con.port);
       if (con.socket == ANET_ERR)
-        throw connection_error(err);
+      {
+        std::ostringstream os;
+        os << err << " (redis://" << con.host << ':' << con.port << ")";
+        throw connection_error( os.str() );
+      }
       anetTcpNoDelay(NULL, con.socket);
       select(con.dbindex, con);
     }
@@ -784,11 +653,37 @@ namespace redis
       return recv_int_reply_(socket) == 1;
     }
     
-    void del(const string_type & key)
+    bool del(const string_type & key)
     {
       int socket = get_socket(key);
       send_(socket, makecmd("DEL") << key);
-      recv_int_ok_reply_(socket);
+      return recv_int_reply_(socket) != 0;
+    }
+
+    template<typename ITERATOR>
+    bool del(ITERATOR begin, ITERATOR end)
+    {
+      std::map<int, string_vector> sock_key_map;
+      while( begin != end )
+      {
+        string_type key = *begin++;
+        sock_key_map[ get_socket(key) ].push_back(key);
+      }
+
+      typedef std::pair<const int, string_vector> sock_key_pair;
+      BOOST_FOREACH(const sock_key_pair & p, sock_key_map)
+      {
+        send_(p.first, makecmd("DEL") << p.second);
+      }
+
+      int_type res =  false;
+
+      BOOST_FOREACH(const sock_key_pair & p, sock_key_map)
+      {
+        res += recv_int_reply_(p.first);
+      }
+
+      return res;
     }
     
     datatype type(const string_type & key)
@@ -842,7 +737,7 @@ namespace redis
         boost::posix_time::ptime epoch( boost::gregorian::date(1970, 1, 1) );
         gen.seed( (now-epoch).total_seconds() );
         
-        boost::uniform_int<> dist(0, connections_.size());
+        boost::uniform_int<> dist(0, connections_.size()-1);
         boost::variate_generator< boost::mt19937&, boost::uniform_int<> > die(gen, dist);
         socket = connections_[die()].socket;
       }
@@ -859,7 +754,45 @@ namespace redis
       int source_socket = get_socket(old_name);
       int destin_socket = get_socket(new_name);
       if( source_socket != destin_socket )
-        throw std::runtime_error("feature is not available in cluster mode");
+      {
+        switch( type(old_name) )
+        {
+          case datatype_none:      // key doesn't exist
+            return;
+          case datatype_string:
+            set(new_name, get(old_name));
+            break;
+          case datatype_list:
+          {
+            string_vector content;
+            lrange(old_name, 0, -1, content);
+            del(new_name);
+            BOOST_FOREACH(const string_type & val, content)
+            {
+              rpush(new_name, val);
+            }
+            break;
+          }
+          case datatype_set:
+          {
+            string_set content;
+            smembers(old_name, content);
+            del(new_name);
+            BOOST_FOREACH(const string_type & val, content)
+            {
+              sadd(new_name, val);
+            }
+            break;
+          }
+          case datatype_zset:
+          case datatype_hash:
+          case datatype_unknown:
+          default:
+            throw std::runtime_error("renaming is not supported for this datatype in cluster mode");
+        }
+        del(old_name);
+        return;
+      }
 
       send_(source_socket, makecmd("RENAME") << old_name << new_name);
       recv_ok_reply_(source_socket);
@@ -874,7 +807,12 @@ namespace redis
       int destin_socket = get_socket(new_name);
       
       if( source_socket != destin_socket )
-        throw std::runtime_error("feature is not available in cluster mode");
+      {
+        if( exists(new_name) )
+          return false;
+        rename(old_name, new_name);
+        return true;
+      }
       
       send_(source_socket, makecmd("RENAMENX") << old_name << new_name);
       return recv_int_reply_(source_socket) == 1;
@@ -1070,12 +1008,36 @@ namespace redis
         return missing_value();
     }
     
-    void sadd(const string_type & key,
+    bool sadd(const string_type & key,
                            const string_type & value)
     {
       int socket = get_socket(key);
       send_(socket, makecmd("SADD") << key << value);
-      recv_int_ok_reply_(socket);
+      return recv_int_reply_(socket) == 1;
+    }
+
+    template<typename ITERATOR>
+    int_type sadd(const string_type & key, ITERATOR begin, ITERATOR end)
+    {
+      int socket = get_socket(key);
+      std::string commands;
+      size_t count = 0;
+      
+      while(begin != end)
+      {
+        string_type val = *begin++;
+        commands += makecmd("SADD") << key << val;
+        count++;
+      }
+      
+      send_(socket, commands);
+
+      int_type res = 0;
+      for(size_t i=0; i < count; i++)
+      {
+        res += recv_int_reply_(socket);
+      }
+      return res;
     }
     
     void srem(const string_type & key,
@@ -1098,7 +1060,11 @@ namespace redis
       int src_socket = get_socket(srckey);
       int dst_socket = get_socket(dstkey);
       if(dst_socket != src_socket)
-        throw std::runtime_error("function not available in cluster mode");
+      {
+        srem(srckey, member);
+        sadd(dstkey, member);
+        return;
+      }
         
       send_(src_socket, makecmd("SMOVE") << srckey << dstkey << member);
       recv_int_ok_reply_(src_socket);
@@ -1125,9 +1091,39 @@ namespace redis
      */
     int_type sinter(const string_vector & keys, string_set & out)
     {
-      int socket = get_socket(keys);
-      send_(socket, makecmd("SINTER") << keys);
-      return recv_multi_bulk_reply_(socket, out);
+      std::map<int, string_vector> per_server;
+      BOOST_FOREACH(const string_type & key, keys)
+      {
+        per_server[get_socket(key)].push_back(key);
+      }
+
+      size_t i = 0;
+
+      typedef std::pair<const int, string_vector> per_server_pair;
+      BOOST_FOREACH(const per_server_pair & p, per_server)
+      {
+        send_(p.first, makecmd("SINTER") << p.second);
+      }
+      
+      BOOST_FOREACH(const per_server_pair & p, per_server)
+      {
+        string_set cur;
+        recv_multi_bulk_reply_(p.first, cur);
+        if(i > 0)
+        {
+          string_set prev = out;
+          out.clear();
+          
+          std::set_intersection(prev.begin(), prev.end(), cur.begin(), cur.end(), std::inserter(out, out.end()));
+        }
+        else
+        {
+          out = cur;
+        }
+        i++;
+      }
+  
+      return out.size();
     }
 
     /**
@@ -1138,7 +1134,22 @@ namespace redis
       int socket = get_socket(dstkey);
       int source_sockets = get_socket(keys);
       if(socket != source_sockets)
-        throw std::runtime_error("not available in cluster mode");
+      {
+        std::cerr << 0 << std::endl;
+        string_set content;
+        std::cerr << 1 << std::endl;
+        sinter(keys, content);
+        std::cerr << 2 << std::endl;
+        del(dstkey);
+        std::cerr << 3 << std::endl;
+        BOOST_FOREACH(const string_type & val, content)
+        {
+          std::cerr << 4 << std::endl;
+          sadd(dstkey, val);
+        } 
+        std::cerr << 5 << std::endl;
+        return content.size();
+      }
       
       send_(socket, makecmd("SINTERSTORE") << dstkey << keys);
       return recv_int_reply_(socket);
@@ -1147,6 +1158,30 @@ namespace redis
     int_type sunion(const string_vector & keys, string_set & out)
     {
       int socket = get_socket(keys);
+      if(socket == -1)
+      {
+        std::map< int, boost::optional<makecmd> > per_socket_keys;
+        BOOST_FOREACH(const string_type & key, keys)
+        {
+          boost::optional<makecmd> & optCmd = per_socket_keys[ get_socket(key) ];
+          if( !optCmd )
+            optCmd = makecmd("SUNION");
+          *optCmd << key;
+        }
+
+        typedef std::pair< const int, boost::optional<makecmd> > per_sock_pair;
+        BOOST_FOREACH(const per_sock_pair & p, per_socket_keys)
+        {
+          send_(p.first, *p.second);
+        }
+        
+        BOOST_FOREACH(const per_sock_pair & p, per_socket_keys)
+        {
+          recv_multi_bulk_reply_(p.first, out);
+        }
+        return out.size();
+      }
+      
       send_(socket, makecmd("SUNION") << keys);
       return recv_multi_bulk_reply_(socket, out);
     }
@@ -1157,7 +1192,12 @@ namespace redis
       int socket = get_socket(dstkey);
       int source_sockets = get_socket(keys);
       if(socket != source_sockets)
-        throw std::runtime_error("not available in cluster mode");
+      {
+        string_set content;
+        sunion(keys, content);
+        del(dstkey);
+        return sadd(dstkey, content.begin(), content.end());
+      }
       
       send_(socket, makecmd("SUNIONSTORE") << dstkey << keys);
       return recv_int_reply_(socket);
@@ -1458,12 +1498,15 @@ namespace redis
     
     void select(int_type dbindex)
     {
-      if( connections_.size() > 1 )
-        throw std::runtime_error("feature is not available in cluster mode");
+      BOOST_FOREACH(const connection_data & con, connections_)
+      {
+        send_(con.socket, makecmd("SELECT") << dbindex);
+      }
       
-      int socket = connections_[0].socket;
-      send_(socket, makecmd("SELECT") << dbindex);
-      recv_ok_reply_(socket);
+      BOOST_FOREACH(const connection_data & con, connections_)
+      {
+        recv_ok_reply_(con.socket);
+      }
     }
     
     void select(int_type dbindex, const connection_data & con)
@@ -1678,13 +1721,10 @@ namespace redis
       {
       }
     }
-    
-    void info(server_info & out)
-    {
-      if( connections_.size() > 1 )
-        throw std::runtime_error("not possible in cluster mode");
 
-      int socket = connections_[0].socket;
+    void info(const connection_data & con, server_info & out)
+    {
+      int socket = con.socket;
       send_(socket, makecmd("INFO"));
       std::string response = recv_bulk_reply_(socket);
       
@@ -1737,11 +1777,16 @@ namespace redis
           out.arch_bits = boost::lexical_cast<unsigned short>(val);
         else if (key == "multiplexing_api")
           out.multiplexing_api = val;
-#ifndef NDEBUG // Ignore new/unknown keys in release mode
-        else
-          std::cerr << "Found unknown info key '" << key << "'" << std::endl;
-#endif // NDEBUG
+        #ifndef NDEBUG // Ignore new/unknown keys in release mode
+          else
+            std::cerr << "Found unknown info key '" << key << "'" << std::endl;
+          #endif // NDEBUG
       }
+    }
+    
+    void info(server_info & out)
+    {
+      info(connections_[0], out);
     }
 
   private:
@@ -1897,13 +1942,17 @@ namespace redis
     int get_socket(const string_vector & keys)
     {
       assert( !keys.empty() );
+
+      if( connections_.size() == 1 )
+        return connections_[0].socket;
       
       int socket = -1;
       for(size_t i=0; i < keys.size(); i++)
       {
         int cur_socket = get_socket(keys[i]);
         if(i > 0 && socket != cur_socket)
-          throw std::runtime_error("not possible in cluster mode");
+          return -1;
+          //throw std::runtime_error("not possible in cluster mode");
         
         socket = cur_socket;
       }
@@ -1911,6 +1960,146 @@ namespace redis
       return socket;
     }
 
+#ifndef NDEBUG
+    void output_proto_debug(const std::string & data, bool is_received = true)
+    {
+      std::string escaped_data(data);
+      size_t pos;
+      while ((pos = escaped_data.find("\n")) != std::string::npos)
+        escaped_data.replace(pos, 1, "\\n");
+      while ((pos = escaped_data.find("\r")) != std::string::npos)
+        escaped_data.replace(pos, 1, "\\r");
+      
+      std::cerr << time(NULL) << ": "
+                                 << (is_received ? "RECV '" : "SEND '")
+                                 << escaped_data
+                                 << "'"
+                                    << std::endl;
+    }
+#endif
+
+    std::vector<std::string>::size_type split(const std::string & str, char delim, std::vector<std::string> & elems)
+    {
+      std::stringstream ss(str);
+      std::string item;
+      std::vector<std::string>::size_type n = 0;
+      while (getline(ss, item, delim))
+      {
+        elems.push_back(item);
+        ++n;
+      }
+      return n;
+    }
+    
+    inline std::string & rtrim(std::string & str, const std::string & ws = REDIS_WHITESPACE)
+    {
+      std::string::size_type pos = str.find_last_not_of(ws);
+      str.erase(pos + 1);
+      return str;
+    }
+    
+    inline void split_lines(const std::string & str, std::vector<std::string> & elems)
+    {
+      split(str, '\n', elems);
+      for (std::vector<std::string>::iterator it = elems.begin(); it != elems.end(); ++it)
+        rtrim(*it);
+    }
+    // Reads N bytes from given blocking socket.
+    
+    std::string read_n(int socket, ssize_t n)
+    {
+      char * buffer = new char[n + 1];
+      buffer[n] = '\0';
+      
+      char * bp = buffer;
+      ssize_t bytes_read = 0;
+      
+      while (bytes_read != n)
+      {
+        ssize_t bytes_received = 0;
+        do
+          bytes_received = recv(socket, bp, n - (bp - buffer), 0);
+        while(bytes_received < 0 && errno == EINTR);
+        
+        if (bytes_received == 0)
+          throw redis::connection_error("connection was closed");
+        
+        bytes_read += bytes_received;
+        bp         += bytes_received;
+      }
+      
+      std::string str(buffer, n);
+      delete [] buffer;
+      return str;
+    }
+    
+    // Reads a single line of character data from the given blocking socket.
+    // Returns the line that was read, not including EOL delimiter(s).  Both LF
+    // ('\n') and CRLF ("\r\n") delimiters are supported.  If there was an I/O
+    // error reading from the socket, connection_error is raised.  If max_size
+    // bytes are read before finding an EOL delimiter, a blank string is
+    // returned.
+    
+    std::string read_line(int socket, ssize_t max_size = 2048)
+    {
+      assert(socket > 0);
+      assert(max_size > 0);
+      
+      std::ostringstream oss;
+      
+      enum { buffer_size = 64 };
+      char buffer[buffer_size];
+      memset(buffer, 0, buffer_size);
+      
+      ssize_t total_bytes_read = 0;
+      bool found_delimiter = false;
+      
+      while (total_bytes_read < max_size && !found_delimiter)
+      {
+        // Peek at what's available.
+        
+        ssize_t bytes_received = 0;
+        do
+          bytes_received = recv(socket, buffer, buffer_size, MSG_PEEK);
+        while(bytes_received < 0 && errno == EINTR);
+        
+        if (bytes_received == 0)
+          throw connection_error("connection was closed");
+        
+        // Some data is available; Length might be < buffer_size.
+        // Look for newline in whatever was read though.
+        
+        char * eol = static_cast<char *>(memchr(buffer, '\n', bytes_received));
+        
+        // If found, write data from the buffer to the output string.
+        // Else, write the entire buffer and continue reading more data.
+        
+        ssize_t to_read = bytes_received;
+        
+        if (eol)
+        {
+          to_read = eol - buffer + 1;
+          oss.write(buffer, to_read);
+          found_delimiter = true;
+        }
+        else
+          oss.write(buffer, bytes_received);
+        
+        // Now read from the socket to remove the peeked data from the socket's
+          // read buffer.  This will not block since we've peeked already and know
+          // there's data waiting.  It might fail if we were interrupted however.
+          
+          do
+            bytes_received = recv(socket, buffer, to_read, 0);
+          while(bytes_received < 0 && errno == EINTR);
+      }
+      
+      // Construct final line string. Remove trailing CRLF-based whitespace.
+      
+      std::string line = oss.str();
+      return rtrim(line, REDIS_LBR);
+    }
+    
   private:
     std::vector<connection_data> connections_;
     //int socket_;
@@ -1952,7 +2141,7 @@ namespace redis
 
     void del()
     {
-      return client_conn_->del(key_);
+      client_conn_->del(key_);
     }
 
     void rename(const client::string_type & new_name)
