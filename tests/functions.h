@@ -76,6 +76,7 @@ public:
   explicit block_duration(const std::string & job_name, size_t count = 0)
   : start_(now()), job_name_(job_name), count_(count)
   {
+    cerr << "------------------------------" << endl;
   }
   
   ~block_duration()

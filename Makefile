@@ -10,8 +10,8 @@ CLIENTOBJS = anet.o
 LIBNAME = libredisclient.a
 
 TESTAPP = test_client
-TESTAPPOBJS = test_client.o test_lists.o test_sets.o test_zsets.o test_cluster.o test_shared_strings.o test_shared_ints.o benchmark.o functions.o
-TESTAPPLIBS = $(LIBNAME) -lstdc++
+TESTAPPOBJS = test_client.o test_lists.o test_sets.o test_zsets.o test_hashes.o test_cluster.o test_distributed_strings.o test_distributed_ints.o test_distributed_mutexes.o benchmark.o functions.o
+TESTAPPLIBS = $(LIBNAME) -lstdc++ -lpthread -lboost_thread-mt
 
 all: $(LIBNAME) $(TESTAPP)
 
@@ -41,12 +41,14 @@ dep:
 log:
 	git log '--pretty=format:%ad %s' --date=short > Changelog
 
-anet.o:                anet.c fmacros.h anet.h
-test_client.o:         redisclient.h test_client.cpp tests/functions.h
-test_lists.o:          redisclient.h tests/test_lists.cpp tests/functions.h
-test_sets.o:           redisclient.h tests/test_sets.cpp tests/functions.h
-test_zsets.o:          redisclient.h tests/test_zsets.cpp tests/functions.h
-test_cluster.o:        redisclient.h tests/test_cluster.cpp tests/functions.h
-test_shared_strings.o: redisclient.h tests/test_shared_strings.cpp tests/functions.h
-test_shared_ints.o:    redisclient.h tests/test_shared_ints.cpp tests/functions.h
-benchmark.o:           redisclient.h tests/benchmark.cpp tests/functions.h
+anet.o:                     anet.c fmacros.h anet.h
+test_client.o:              redisclient.h test_client.cpp tests/functions.h
+test_lists.o:               redisclient.h tests/test_lists.cpp tests/functions.h
+test_sets.o:                redisclient.h tests/test_sets.cpp tests/functions.h
+test_zsets.o:               redisclient.h tests/test_zsets.cpp tests/functions.h
+test_hashes.o:              redisclient.h tests/test_hashes.cpp tests/functions.h
+test_cluster.o:             redisclient.h tests/test_cluster.cpp tests/functions.h
+test_distributed_strings.o: redisclient.h tests/test_distributed_strings.cpp tests/functions.h
+test_distributed_ints.o:    redisclient.h tests/test_distributed_ints.cpp tests/functions.h
+test_distributed_mutexes.o: redisclient.h tests/test_distributed_mutexes.cpp tests/functions.h
+benchmark.o:                redisclient.h tests/benchmark.cpp tests/functions.h

@@ -14,13 +14,28 @@ void test_cluster_dbsize(redis::client & c)
   ASSERT_EQUAL( count, c.dbsize() );
 }
 
+boost::shared_ptr<redis::client> init_non_cluster_client()
+{
+  const char* c_host = getenv("REDIS_HOST");
+  string host = "localhost";
+  if(c_host)
+    host = c_host;
+  return boost::shared_ptr<redis::client>( new redis::client(host) );
+}
+
 boost::shared_ptr<redis::client> init_cluster_client()
 {
   vector<redis::connection_data> redis_server;
+
+  const char* c_host = getenv("REDIS_HOST");
+  string host = "localhost";
+  if(c_host)
+    host = c_host;
   
   {
     /// DB0
     redis::connection_data con;
+    con.host = host;
     con.port = 6379;
     con.dbindex = 14;
     redis_server.push_back(con);
@@ -28,6 +43,7 @@ boost::shared_ptr<redis::client> init_cluster_client()
   {
     /// DB1
     redis::connection_data con;
+    con.host = host;
     con.port = 6380;
     con.dbindex = 14;
     redis_server.push_back(con);
@@ -35,6 +51,7 @@ boost::shared_ptr<redis::client> init_cluster_client()
   {
     /// DB2
     redis::connection_data con;
+    con.host = host;
     con.port = 6381;
     con.dbindex = 14;
     redis_server.push_back(con);
@@ -42,6 +59,7 @@ boost::shared_ptr<redis::client> init_cluster_client()
   {
     /// DB3
     redis::connection_data con;
+    con.host = host;
     con.port = 6382;
     con.dbindex = 14;
     redis_server.push_back(con);

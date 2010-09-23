@@ -5,16 +5,19 @@
 
 #include "tests/functions.h"
 
+boost::shared_ptr<redis::client> init_non_cluster_client();
 boost::shared_ptr<redis::client> init_cluster_client();
 
 // Low level API
 void test_lists(redis::client & c);
 void test_sets(redis::client & c);
 void test_zsets(redis::client & c);
+void test_hashes(redis::client & c);
 
 // High level API
-void test_shared_strings(redis::client & c);
-void test_shared_ints(redis::client & c);
+void test_distributed_strings(redis::client & c);
+void test_distributed_ints(redis::client & c);
+//void test_distributed_mutexes(redis::client & c);
 
 void test_cluster();
 void benchmark(redis::client & c, int TEST_SIZE);
@@ -23,14 +26,14 @@ int main()
 {
   try 
   {
-    bool CLUSTER_MODE = true;
+    bool CLUSTER_MODE = false;
     boost::shared_ptr<redis::client> shared_c;
     
     if(CLUSTER_MODE)
       shared_c = init_cluster_client();
     else
-      shared_c = boost::shared_ptr<redis::client>( new redis::client );
-      
+      shared_c = init_non_cluster_client();
+    
     redis::client & c = *shared_c;
     
     // Test on high number databases
@@ -160,8 +163,8 @@ int main()
 
     test("incrby");
     {
-      ASSERT_EQUAL(c.incrby("goo", 3), 3L);test("0->3");
-      ASSERT_EQUAL(c.incrby("goo", 2), 5L);test("3->5");
+      ASSERT_EQUAL(c.incrby("goo", 3L), 3L);test("0->3");
+      ASSERT_EQUAL(c.incrby("goo", 2L), 5L);test("3->5");
     }
 
     test("exists");
@@ -231,16 +234,6 @@ int main()
       sleep(2);
       ASSERT_EQUAL(c.exists("goo"), false);
     }
-
-    test_lists(c);
-    test_sets(c);
-    test_zsets(c);
-
-    test_shared_strings(c);
-    test_shared_ints(c);
-    
-
-    benchmark(c, 10000);
     
     test("move");
     {
@@ -254,17 +247,17 @@ int main()
       c.select(15);
       ASSERT_EQUAL(c.exists("ttt"), false);
     }
-
+    
     test("move should fail since key exists already");
     {
       c.select(14);
       c.set("ttt", "xxx");
       c.select(15);
       c.set("ttt", "uuu");
-
+      
       bool threw = false;
-
-      try 
+      
+      try
       {
         c.move("ttt", 14);
       }
@@ -272,21 +265,21 @@ int main()
       {
         threw = true;
       }
-
+      
       ASSERT_EQUAL(threw, true);
-
+      
       c.select(14);
       ASSERT_EQUAL(c.exists("ttt"), true);
       c.select(15);
       ASSERT_EQUAL(c.exists("ttt"), true);
     }
-
+    
     test("sort ascending");
     {
       c.sadd("sort1", "3");
       c.sadd("sort1", "2");
       c.sadd("sort1", "1");
-
+      
       redis::client::string_vector sorted;
       ASSERT_EQUAL(c.sort("sort1", sorted), 3L);
       ASSERT_EQUAL(sorted.size(), (size_t) 3);
@@ -294,7 +287,7 @@ int main()
       ASSERT_EQUAL(sorted[1], string("2"));
       ASSERT_EQUAL(sorted[2], string("3"));
     }
-
+    
     test("sort descending");
     {
       redis::client::string_vector sorted;
@@ -304,22 +297,32 @@ int main()
       ASSERT_EQUAL(sorted[1], string("2"));
       ASSERT_EQUAL(sorted[2], string("1"));
     }
-
+    
     test("sort with limit");
     {
       // TODO
     }
-
+    
     test("sort lexicographically");
     {
       // TODO
     }
-
+    
     test("sort with pattern and weights");
     {
       // TODO
     }
+    
+    test_lists(c);
+    test_sets(c);
+    test_zsets(c);
+    test_hashes(c);
 
+    test_distributed_strings(c);
+    test_distributed_ints(c);
+    //test_distributed_mutexes(c);
+
+    benchmark(c, 10000);
 
     test("save");
     {
