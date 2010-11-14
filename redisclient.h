@@ -54,6 +54,7 @@
 #include <boost/date_time/posix_time/posix_time_types.hpp>
 #include <boost/optional.hpp>
 #include <boost/variant.hpp>
+#include <boost/crc.hpp>
 
 #include "anet.h"
 
@@ -433,7 +434,8 @@ namespace redis
 
     inline static string_type missing_value()
     {
-      return "**nonexistent-key**";
+      // now with a UUID included to make accidental impossible
+      return "**nonexistent-key** (271a7ebb-5bc7-48b0-a626-fb52da22b5f6)";
     }
 
     enum datatype 
@@ -2570,9 +2572,29 @@ namespace redis
   
   struct default_hasher
   {
+    uint16_t crc16(const std::string & key) const
+    {
+      boost::crc_16_type result;
+      result.process_bytes( key.data(), key.size() );
+      return result.checksum();
+    }
+    
     inline size_t operator()(const std::string & key, const std::vector<connection_data> & connections)
     {
-      return boost::hash<std::string>()(key) % connections.size();
+      size_t hashing_part_begin = key.find('{');
+      if( hashing_part_begin != std::string::npos )
+      {
+        size_t hashing_part_end = key.find('}', hashing_part_begin+1);
+        if( hashing_part_end != std::string::npos )
+        {
+          size_t len = hashing_part_end - (hashing_part_begin+1);
+          std::string key_part = key.substr(hashing_part_begin+1, len);
+          //std::cout << "using '" << key_part << "' for hashing of key '" << key << "': " << crc16(key_part) << std::endl;
+          return crc16(key_part) % connections.size();
+        }
+      }
+      
+      return crc16(key) % connections.size();
     }
   };
   

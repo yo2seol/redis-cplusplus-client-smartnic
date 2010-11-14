@@ -27,7 +27,7 @@ int main()
 {
   try 
   {
-    bool CLUSTER_MODE = false;
+    bool CLUSTER_MODE = true;
     boost::shared_ptr<redis::client> shared_c;
     
     if(CLUSTER_MODE)
@@ -191,8 +191,16 @@ int main()
       redis::client::string_vector keys;
       ASSERT_EQUAL(c.keys("*oo", keys), 2L);
       ASSERT_EQUAL(keys.size(), (size_t) 2);
-      ASSERT_EQUAL(keys[0], foo);
-      ASSERT_EQUAL(keys[1], goo);
+      if(keys[0] == foo)
+      {
+        ASSERT_EQUAL(keys[0], foo);
+        ASSERT_EQUAL(keys[1], goo);
+      }
+      else
+      {
+        ASSERT_EQUAL(keys[0], goo);
+        ASSERT_EQUAL(keys[1], foo);
+      }
     }
 
     test("randomkey");
@@ -312,6 +320,28 @@ int main()
     test("sort with pattern and weights");
     {
       // TODO
+    }
+
+    if( CLUSTER_MODE )
+    {
+      test("forcing hash slot");
+      {
+        c.lpush("foo_list", "bar");
+        
+        vector<string> keys;
+        // only the part between the first pair of '{' and '}' should be used for getting hash slot
+        // this means that all this keys should be mapped to the same hash slot.
+        keys.push_back("foo_list");
+        keys.push_back("{foo_list}");
+        keys.push_back("{foo_list}bar");
+        keys.push_back("{foo_list}bar1");
+        keys.push_back("bar{foo_list}");
+        keys.push_back("bar{foo_list}bar");
+        keys.push_back("bar{foo_list} {bar}");
+        
+        // BLPOP requires that all keys are on the same hash slot
+        c.blpop(keys, 1);
+      }
     }
     
     test_lists(c);

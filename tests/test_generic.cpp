@@ -9,15 +9,15 @@ void type_tests(redis::client & c, int mode)
   vector<command> commands;
   
   // 0. Status reply
-  commands.push_back( makecmd("SET") << key("test_string") << "value" );
+  commands.push_back( makecmd("SET") << key("{test_}string") << "value" );
   // 1. Error reply
-  commands.push_back( makecmd("LPOP") << key("test_string") ); // -ERR Operation against a key holding the wrong kind of value
+  commands.push_back( makecmd("LPOP") << key("{test_}string") ); // -ERR Operation against a key holding the wrong kind of value
   // 2. Int reply
-  commands.push_back( makecmd("APPEND") << key("test_string") << "_test" );
+  commands.push_back( makecmd("APPEND") << key("{test_}string") << "_test" );
   // 3. Bulk reply
-  commands.push_back( makecmd("GET") << key("test_string") );
+  commands.push_back( makecmd("GET") << key("{test_}string") );
   // 4. Multi bulk reply
-  commands.push_back( makecmd("SMEMBERS") << key("seth") );
+  commands.push_back( makecmd("SMEMBERS") << key("{test_}seth") );
 
   switch(mode)
   {
@@ -96,6 +96,9 @@ void test_generic(redis::client & c)
 {
   using namespace redis;
 
+  c.sadd("{test_}seth", "1"); 
+  c.sadd("{test_}seth", "2");
+  
   test("generic response types (single)");
   {
     type_tests(c, 0);
@@ -139,8 +142,8 @@ void test_generic(redis::client & c)
     }
   }
 
-  int recurrences = 10000;
-  int var_count = 8;
+  int recurrences = 1000;
+  int var_count = 50;
   
   {
     block_duration b("Incrementing keys (normal)", recurrences*var_count);
