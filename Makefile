@@ -10,7 +10,7 @@ CLIENTOBJS = anet.o
 LIBNAME = libredisclient.a
 
 TESTAPP = test_client
-TESTAPPOBJS = test_client.o test_lists.o test_sets.o test_zsets.o test_hashes.o test_cluster.o test_distributed_strings.o test_distributed_ints.o test_distributed_mutexes.o benchmark.o functions.o
+TESTAPPOBJS = test_client.o test_lists.o test_sets.o test_zsets.o test_hashes.o test_cluster.o test_distributed_strings.o test_distributed_ints.o test_distributed_mutexes.o test_generic.o benchmark.o functions.o
 TESTAPPLIBS = $(LIBNAME) -lstdc++ -lpthread -lboost_thread-mt
 
 all: $(LIBNAME) $(TESTAPP)
@@ -51,4 +51,5 @@ test_cluster.o:             redisclient.h tests/test_cluster.cpp tests/functions
 test_distributed_strings.o: redisclient.h tests/test_distributed_strings.cpp tests/functions.h
 test_distributed_ints.o:    redisclient.h tests/test_distributed_ints.cpp tests/functions.h
 test_distributed_mutexes.o: redisclient.h tests/test_distributed_mutexes.cpp tests/functions.h
+test_generic.o:             redisclient.h tests/test_generic.cpp
 benchmark.o:                redisclient.h tests/benchmark.cpp tests/functions.h

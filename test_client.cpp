@@ -13,6 +13,7 @@ void test_lists(redis::client & c);
 void test_sets(redis::client & c);
 void test_zsets(redis::client & c);
 void test_hashes(redis::client & c);
+void test_generic(redis::client & c);
 
 // High level API
 void test_distributed_strings(redis::client & c);
@@ -322,7 +323,9 @@ int main()
     test_distributed_ints(c);
     //test_distributed_mutexes(c);
 
-    benchmark(c, 10000);
+    //benchmark(c, 10000);
+
+    test_generic(c);
 
     test("save");
     {
