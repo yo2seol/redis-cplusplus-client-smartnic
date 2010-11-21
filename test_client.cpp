@@ -322,10 +322,10 @@ int main()
     test_distributed_strings(c);
     test_distributed_ints(c);
     //test_distributed_mutexes(c);
-
-    //benchmark(c, 10000);
-
+    
     test_generic(c);
+    
+    benchmark(c, 10000);
 
     test("save");
     {

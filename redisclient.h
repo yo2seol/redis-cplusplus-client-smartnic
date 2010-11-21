@@ -31,7 +31,7 @@
 #ifndef REDISCLIENT_H
 #define REDISCLIENT_H
 
-#include <sys/errno.h>
+#include <errno.h>
 #include <sys/socket.h>
 
 #include <string>
@@ -361,7 +361,25 @@ namespace redis
     std::string multiplexing_api;
     std::map<std::string, std::string> param_map;
   };
-
+  
+  inline ssize_t recv_or_throw(int fd, void* buf, size_t n, int flags)
+  {
+    ssize_t bytes_received;
+    
+    do
+      bytes_received = ::recv(fd, buf, n, flags);
+    while(bytes_received < static_cast<ssize_t>(0) && errno == EINTR);
+    
+    if( bytes_received == static_cast<ssize_t>(0) )
+      throw connection_error("connection was closed");
+    
+    // Handle receive errors. I overlooked it totally, thanks mkx!
+    if( bytes_received == static_cast<ssize_t>(-1) )
+      throw connection_error(std::string("recv error: ") + strerror(errno));
+      
+    return bytes_received;
+  }
+  
   // You should construct a 'client' object per connection to a redis-server.
   //
   // Please read the online redis command reference:
@@ -2171,12 +2189,20 @@ namespace redis
       return recv_int_reply_(socket);
     }
 
+#if 0 // currently unuseable
+    struct subscription_t
+    {
+      string_type channel;
+      boost::function<void (const string_type &)> callback;
+    };
+
     void subscribe(const string_type & channel)
     {
       int socket = get_socket(channel);
       
     }
-
+#endif // 0 // currently unuseable
+    
   private:
     base_client(const base_client &);
     base_client & operator=(const base_client &);
@@ -2414,39 +2440,30 @@ namespace redis
     
     std::string read_n(int socket, ssize_t n)
     {
-      char * buffer = new char[n + 1];
-      buffer[n] = '\0';
-      
-      char * bp = buffer;
+      // changed char* to vector<char> buffer to don't leak memory on exceptions (and also because I hate this delete stuff)
+      // C++0x TODO: use a std::string here and it's non-const data() member instead of the vector<char> indirection
+      std::vector<char> buffer(n);
+
+      char* buf_start = &buffer[0];
+      char* bp = buf_start;
       ssize_t bytes_read = 0;
       
       while (bytes_read != n)
       {
-        ssize_t bytes_received = 0;
-        do
-          bytes_received = recv(socket, bp, n - (bp - buffer), 0);
-        while(bytes_received < 0 && errno == EINTR);
-        
-        if (bytes_received == 0)
-          throw redis::connection_error("connection was closed");
+        ssize_t bytes_received = recv_or_throw(socket, bp, n - (bp - buf_start), 0);
         
         bytes_read += bytes_received;
         bp         += bytes_received;
       }
       
-      std::string str(buffer, n);
-      delete [] buffer;
-      return str;
+      return std::string( buf_start, n );
     }
 
     reply_t next_reply_type(int socket)
     {
       char reply_prefix[1];
-      ssize_t bytes_received = recv(socket, reply_prefix, 1, MSG_PEEK);
+      recv_or_throw(socket, reply_prefix, 1, MSG_PEEK);
       
-      if (bytes_received == 0)
-        throw connection_error("connection was closed");
-
       switch( reply_prefix[0] )
       {
         case REDIS_PREFIX_STATUS_REPLY_VALUE:
@@ -2520,13 +2537,7 @@ namespace redis
       {
         // Peek at what's available.
         
-        ssize_t bytes_received = 0;
-        do
-          bytes_received = recv(socket, buffer, buffer_size, MSG_PEEK);
-        while(bytes_received < 0 && errno == EINTR);
-        
-        if (bytes_received == 0)
-          throw connection_error("connection was closed");
+        ssize_t bytes_received = recv_or_throw(socket, buffer, buffer_size, MSG_PEEK);
         
         // Some data is available; Length might be < buffer_size.
         // Look for newline in whatever was read though.
@@ -2547,13 +2558,11 @@ namespace redis
         else
           oss.write(buffer, bytes_received);
         
-        // Now read from the socket to remove the peeked data from the socket's
+          // Now read from the socket to remove the peeked data from the socket's
           // read buffer.  This will not block since we've peeked already and know
           // there's data waiting.  It might fail if we were interrupted however.
-          
-          do
-            bytes_received = recv(socket, buffer, to_read, 0);
-          while(bytes_received < 0 && errno == EINTR);
+
+          bytes_received = recv_or_throw(socket, buffer, to_read, 0);
       }
       
       // Construct final line string. Remove trailing CRLF-based whitespace.
