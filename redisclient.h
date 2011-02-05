@@ -2010,8 +2010,9 @@ namespace redis
       for ( ; it != get_patterns.end(); ++it)
         m << "GET" << *it;
       
-      m << (order == sort_order_ascending ? "ASC" : "DESC")
-      << (lexicographically ? "ALPHA" : "");
+      m << (order == sort_order_ascending ? "ASC" : "DESC");
+      if(lexicographically)
+        m << "ALPHA";
       
       send_(socket, m);
       return recv_multi_bulk_reply_(socket, out);
