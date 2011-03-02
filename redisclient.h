@@ -2132,6 +2132,8 @@ namespace redis
       for(string_vector::const_iterator it = lines.begin(); it != lines.end(); ++it)
       {
         const std::string & line = *it;
+        if( line.empty() || line[0] == '#' ) // Don't throw protocol_error on empty and comment lines
+          continue;
         string_vector line_parts;
         split(line, ':', line_parts);
         if (line_parts.size() != 2)
