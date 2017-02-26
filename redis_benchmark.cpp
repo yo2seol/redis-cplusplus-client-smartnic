@@ -1,28 +1,23 @@
-// The MIT License (MIT)
-//
-// Copyright (c) 2015-2017 Simon Ninon <simon.ninon@gmail.com>
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
+/* Copyright (c) 2017 Stanford University
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR(S) DISCLAIM ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL AUTHORS BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
 
 #include <fcntl.h>    /* For O_RDWR */
 #include <unistd.h>   /* For open(), creat() */
+#include <signal.h>
 
+#include <stdlib.h>
 #include <cstdint>
 #include <cassert>
 #include <cstdio>
@@ -43,7 +38,7 @@
 using RAMCloud::Cycles;
 
 // Globals.
-const char* hostIp = "192.168.1.164";
+const char* hostIp = "192.168.0.164";
 int objectSize = 100;   // Number of bytes for value payload.
 int count = 1000000;    // How many repeat
 int clientIndex = 0;    // ClientIndex as in RAMCloud clusterPerf.
@@ -126,7 +121,8 @@ genRandomString(char* str, const int length) {
 void makeKey(int value, uint32_t length, char* dest)
 {
     memset(dest, 'x', length);
-    *(reinterpret_cast<int*>(dest)) = value;
+    std::string str = std::to_string(value);
+    memcpy(dest, str.c_str(), str.size());
 }
 
 // Write or overwrite randomly-chosen objects from a large table (so that there
@@ -279,15 +275,23 @@ parseOptions(int argc, char* argv[]) {
     }
 }
 
+/* Catch Signal Handler functio */
+void signal_callback_handler(int signum) {
+//    printf("Caught signal SIGPIPE %d\n",signum);
+}
+
 int
 main(int argc, char *argv[]) {
+    /* Catch Signal Handler SIGPIPE */
+    signal(SIGPIPE, signal_callback_handler);
+
     parseOptions(argc, argv);
 
     redis::client realClient(hostIp);
     client = &realClient;
 
     client->select(14);
-    //client->flushdb();
+    client->flushdb();
 
     if (strncmp("writeDistRandom", argv[1], 20) == 0) {
         writeDistRandom();

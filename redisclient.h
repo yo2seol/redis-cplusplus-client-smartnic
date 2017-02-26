@@ -41,6 +41,7 @@
 #include <stdexcept>
 #include <ctime>
 #include <sstream>
+#include <errno.h>
 
 #include <boost/concept_check.hpp>
 #include <boost/lexical_cast.hpp>
@@ -56,12 +57,16 @@
 #include <boost/variant.hpp>
 
 #include "anet.h"
+#include "UnsyncedRpcTracker.h"
 
 #define REDIS_LBR                       "\r\n"
 #define REDIS_STATUS_REPLY_OK           "OK"
 #define REDIS_PREFIX_STATUS_REPLY_ERROR "-ERR "
+#define REDIS_PREFIX_STATUS_REPLY_RETRY "-RETRY "
+#define REDIS_PREFIX_STATUS_REPLY_LOADING "-LOADING "
 #define REDIS_PREFIX_STATUS_REPLY_ERR_C '-'
 #define REDIS_PREFIX_STATUS_REPLY_VALUE '+'
+#define REDIS_PREFIX_STATUS_REPLY_UNSYNCED '@'
 #define REDIS_PREFIX_SINGLE_BULK_REPLY  '$'
 #define REDIS_PREFIX_MULTI_BULK_REPLY   '*'
 #define REDIS_PREFIX_INT_REPLY          ':'
@@ -84,8 +89,8 @@ namespace redis {
 
     struct connection_data {
 
-        connection_data(const std::string & host = "localhost", uint16_t port = 6379, int dbindex = 0)
-        : host(host), port(port), dbindex(dbindex), socket(ANET_ERR) {
+        connection_data(const std::string & host = "localhost", uint16_t port = 6379, uint16_t replayPort = 6380, int dbindex = 0)
+        : host(host), port(port), replayPort(replayPort), dbindex(dbindex), socket(ANET_ERR) {
         }
 
         bool operator==(const connection_data & other) const {
@@ -101,6 +106,7 @@ namespace redis {
 
         std::string host;
         boost::uint16_t port;
+        boost::uint16_t replayPort;
         int dbindex;
 
     private:
@@ -145,6 +151,13 @@ namespace redis {
 
         connection_error(const std::string & err) : redis_error(err) {
         }
+    };
+
+    // Server is not yet ready for accepting normal request.
+    class retry_error : public redis_error {
+    public:
+        retry_error() : redis_error(std::string()) {
+        };
     };
 
     // Redis gave us a reply we were not expecting.
@@ -400,13 +413,14 @@ namespace redis {
         typedef long int_type;
 
         explicit base_client(const string_type & host = "localhost",
-                uint16_t port = 6379, int_type dbindex = 0) {
+                uint16_t port = 6379, uint16_t replayPort = 6380, int_type dbindex = 0) {
             srand(std::time(NULL));
             clientId = rand() + 1; // Must not be 0.
             lastRequestId = 0;
             connection_data con;
             con.host = host;
             con.port = port;
+            con.replayPort = replayPort;
             con.dbindex = dbindex;
             init(con);
             connections_.push_back(con);
@@ -493,9 +507,44 @@ namespace redis {
 
         void set(const string_type & key,
                 const string_type & value) {
-            int socket = get_socket(key);
-            send_(socket, makecmd("SET") << key << value);
-            recv_ok_reply_(socket);
+
+            makecmd request("SET");
+            request << key << value << std::to_string(clientId) << std::to_string(++lastRequestId);
+            bool reopenTcp = false;
+            int tryCount = 0;
+            int socket;
+            while (1) {
+                try {
+                    if (reopenTcp) {
+                        init(get_conn(key));
+                        reopenTcp = false;
+                    }
+                    socket = get_socket(key);
+                    send_(socket, request);
+                    uint64_t opNumInServer, syncNum;
+                    if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
+                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request, opNumInServer, syncNum);
+                    } else {
+                        fprintf(stderr, "Short message or duplicate. Req: %s\n", ((std::string)request).c_str());
+                    }
+                    break;
+                } catch (connection_error& e) {
+                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
+                    if (!reopenTcp) {
+                        // avoid if trouble in re-initiating connection.
+                        handle_connection_error(socket);
+                    }
+                    reopenTcp = true;
+                    sleep(1);
+                    ++tryCount;
+                }
+//                catch (retry_error& e) {
+//                    fprintf(stderr, "retry error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
+//                    reopenTcp = false;
+//                    sleep(1);
+//                    ++tryCount;
+//                }
+            }
         }
 
         void mset(const string_vector & keys, const string_vector & values) {
@@ -1979,38 +2028,24 @@ namespace redis {
             return recv_int_reply_(socket);
         }
 
-#if 0 // currently unuseable
-
-        struct subscription_t {
-            string_type channel;
-            boost::function<void (const string_type &) > callback;
-        };
-
-        void subscribe(const string_type & channel) {
-            int socket = get_socket(channel);
-
-        }
-#endif // 0 // currently unuseable
-
     private:
         base_client(const base_client &);
         base_client & operator=(const base_client &);
 
         void send_(int socket, const std::string & msg) {
-#ifndef NDEBUG
-            //output_proto_debug(msg, false);
-#endif
-
             if (anetWrite(socket, const_cast<char *> (msg.data()), msg.size()) == -1)
                 throw connection_error(strerror(errno));
+//            handle_connection_error(socket);
+        }
+
+        void handle_connection_error(int socket) {
+            connection_data conn = connections_[get_connIdx(socket)];
+            tracker.flushSession(socket, conn.host, conn.replayPort);
+//            throw connection_error(strerror(errno));
         }
 
         std::string recv_single_line_reply_(int socket) {
             std::string line = read_line(socket);
-
-#ifndef NDEBUG
-            //output_proto_debug(line);
-#endif
 
             if (line.empty())
                 throw protocol_error("empty single line reply");
@@ -2021,8 +2056,13 @@ namespace redis {
                     error_msg = "unknown error";
                 throw protocol_error(error_msg);
             }
+            if (line.find(REDIS_PREFIX_STATUS_REPLY_RETRY) == 0) {
+                throw retry_error();
+            }
 
-            if (line[0] != REDIS_PREFIX_STATUS_REPLY_VALUE)
+
+            if (line[0] != REDIS_PREFIX_STATUS_REPLY_VALUE &&
+                    line[0] != REDIS_PREFIX_STATUS_REPLY_UNSYNCED)
                 throw protocol_error("unexpected prefix for status reply");
 
             return line.substr(1);
@@ -2033,12 +2073,51 @@ namespace redis {
                 throw protocol_error("expected OK response");
         }
 
+        /**
+         *
+         * @param socket
+         * @param opNum
+         * @param synced
+         * \return
+         *      returns false if reply was OK (RIFL Duplicate), so no need for
+         *      registering. (since this data was survived from crash.)
+         */
+        bool recv_unsynced_ok_reply_(int socket, uint64_t* opNum, uint64_t* synced) {
+            std::string reply = recv_single_line_reply_(socket);
+
+            if (reply.substr(0,2) != REDIS_STATUS_REPLY_OK)
+                throw protocol_error("expected OK response");
+
+            // For RIFL duplicate, just ignore.
+            if (reply[3] == '(' || reply.size() < 4) {
+                fprintf(stderr, "RIFL duplicate returned? response: %s\n", reply.c_str());
+                return false;
+            }
+
+            // Parse integer arguments.
+            const char* cstr = reply.c_str();
+            char* end;
+            *opNum = std::strtoull(cstr + 3, &end, 10);
+            if (errno == ERANGE){
+                throw protocol_error("argument is out of uint64_t range");
+                errno = 0;
+            }
+            cstr = end;
+            *synced = std::strtoull(cstr, &end, 10);
+            if (errno == ERANGE){
+                throw protocol_error("argument is out of uint64_t range");
+                errno = 0;
+            }
+            if (*opNum == 0) {
+                fprintf(stderr, "wrong opNum. response: %s\n", reply.c_str());
+                fflush(stderr);
+                //throw protocol_error("wrong opNum");
+            }
+            return true;
+        }
+
         int_type recv_bulk_reply_(int socket, char prefix) {
             std::string line = read_line(socket);
-
-#ifndef NDEBUG
-            //output_proto_debug(line);
-#endif
 
             if (line[0] != prefix) {
 #ifndef NDEBUG
@@ -2059,10 +2138,6 @@ namespace redis {
             int_type real_length = length + 2; // CRLF
 
             std::string data = read_n(socket, real_length);
-
-#ifndef NDEBUG
-            //output_proto_debug(data.substr(0, data.length()-2));
-#endif
 
             if (data.empty())
                 throw protocol_error("invalid bulk reply data; empty");
@@ -2137,6 +2212,24 @@ namespace redis {
         void recv_int_ok_reply_(int socket) {
             if (recv_int_reply_(socket) != 1)
                 throw protocol_error("expecting int reply of 1");
+        }
+
+        connection_data& get_conn(const string_type & key) {
+            size_t con_count = connections_.size();
+            if (con_count == 1)
+                return connections_[0];
+            size_t idx = hasher_(key, static_cast<const std::vector<connection_data> &> (connections_));
+            return connections_[idx];
+        }
+
+        int get_connIdx(int socket) {
+            for (uint i = 0; i < connections_.size(); ++i) {
+                if (connections_[i].socket == socket) {
+                    return static_cast<int>(i);
+                }
+            }
+            fprintf(stderr, "connIdx not found. socket: %d\n", socket);
+            throw redis_error("Something wrong.. get_connIdx failed.");
         }
 
         inline int get_socket(const string_type & key) {
@@ -2339,6 +2432,7 @@ namespace redis {
         CONSISTENT_HASHER hasher_;
         uint64_t clientId; // Must not be 0. either random or assigned by server.
         uint64_t lastRequestId;
+        RAMCloud::UnsyncedRpcTracker tracker;
     };
 
     struct default_hasher {

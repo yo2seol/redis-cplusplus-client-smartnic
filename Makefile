@@ -11,7 +11,7 @@ LIBNAME = libredisclient.a
 
 #TESTAPP = test_client
 TESTAPP = redis_benchmark
-TESTAPPOBJS = Cycles.o redis_benchmark.o test_lists.o test_sets.o test_zsets.o test_hashes.o test_cluster.o test_distributed_strings.o test_distributed_ints.o test_distributed_mutexes.o test_generic.o benchmark.o functions.o
+TESTAPPOBJS = Cycles.o redis_benchmark.o UnsyncedRpcTracker.o test_lists.o test_sets.o test_zsets.o test_hashes.o test_cluster.o test_distributed_strings.o test_distributed_ints.o test_distributed_mutexes.o test_generic.o benchmark.o functions.o
 TESTAPPLIBS = $(LIBNAME) -lstdc++ -lboost_system -lboost_thread -lpthread
 
 all: $(LIBNAME) $(TESTAPP)
@@ -46,7 +46,8 @@ log:
 	git log '--pretty=format:%ad %s' --date=short > Changelog
 
 anet.o:                     anet.c fmacros.h anet.h
-redis_benchmark.o:	    redisclient.h redis_benchmark.cpp Cycles.h
+redis_benchmark.o:	    redisclient.h redis_benchmark.cpp Cycles.h UnsyncedRpcTracker.h
+UnsyncedRpcTracker.o:	    UnsyncedRpcTracker.h
 Cycles.o:		    Cycles.h
 test_client.o:              redisclient.h test_client.cpp tests/functions.h
 test_lists.o:               redisclient.h tests/test_lists.cpp tests/functions.h
