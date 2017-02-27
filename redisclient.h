@@ -510,41 +510,42 @@ namespace redis {
 
             makecmd request("SET");
             request << key << value << std::to_string(clientId) << std::to_string(++lastRequestId);
-            bool reopenTcp = false;
-            int tryCount = 0;
-            int socket;
-            while (1) {
-                try {
-                    if (reopenTcp) {
-                        init(get_conn(key));
-                        reopenTcp = false;
-                    }
-                    socket = get_socket(key);
-                    send_(socket, request);
-                    uint64_t opNumInServer, syncNum;
-                    if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
-                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request, opNumInServer, syncNum);
-                    } else {
-                        fprintf(stderr, "Short message or duplicate. Req: %s\n", ((std::string)request).c_str());
-                    }
-                    break;
-                } catch (connection_error& e) {
-                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
-                    if (!reopenTcp) {
-                        // avoid if trouble in re-initiating connection.
-                        handle_connection_error(socket);
-                    }
-                    reopenTcp = true;
-                    sleep(1);
-                    ++tryCount;
-                }
-//                catch (retry_error& e) {
-//                    fprintf(stderr, "retry error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
-//                    reopenTcp = false;
+            sendRecvOk(key, request);
+//            bool reopenTcp = false;
+//            int tryCount = 0;
+//            int socket;
+//            while (1) {
+//                try {
+//                    if (reopenTcp) {
+//                        init(get_conn(key));
+//                        reopenTcp = false;
+//                    }
+//                    socket = get_socket(key);
+//                    send_(socket, request);
+//                    uint64_t opNumInServer, syncNum;
+//                    if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
+//                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request, opNumInServer, syncNum);
+//                    } else {
+//                        fprintf(stderr, "Short message or duplicate. Req: %s\n", ((std::string)request).c_str());
+//                    }
+//                    break;
+//                } catch (connection_error& e) {
+//                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
+//                    if (!reopenTcp) {
+//                        // avoid if trouble in re-initiating connection.
+//                        handle_connection_error(socket);
+//                    }
+//                    reopenTcp = true;
 //                    sleep(1);
 //                    ++tryCount;
 //                }
-            }
+////                catch (retry_error& e) {
+////                    fprintf(stderr, "retry error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
+////                    reopenTcp = false;
+////                    sleep(1);
+////                    ++tryCount;
+////                }
+//            }
         }
 
         void mset(const string_vector & keys, const string_vector & values) {
@@ -829,10 +830,74 @@ namespace redis {
             return recv_bulk_reply_(socket);
         }
 
+        void sendRecvOk(const string_type& key, const std::string& request) {
+            bool reopenTcp = false;
+            int tryCount = 0;
+            int socket;
+            while (1) {
+                try {
+                    if (reopenTcp) {
+                        init(get_conn(key));
+                        reopenTcp = false;
+                    }
+                    socket = get_socket(key);
+                    send_(socket, request);
+                    uint64_t opNumInServer, syncNum;
+                    if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
+                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request, opNumInServer, syncNum);
+                    } else {
+                        fprintf(stderr, "Short message or duplicate. Req: %s\n", ((std::string)request).c_str());
+                    }
+                    break;
+                } catch (connection_error& e) {
+                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
+                    if (!reopenTcp) {
+                        // avoid if trouble in re-initiating connection.
+                        handle_connection_error(socket);
+                    }
+                    reopenTcp = true;
+                    sleep(3);
+                    ++tryCount;
+                }
+            }
+        }
+
+        int_type sendRecvInt(const string_type& key, const std::string& request) {
+            bool reopenTcp = false;
+            int tryCount = 0;
+            int socket;
+            while (1) {
+                try {
+                    if (reopenTcp) {
+                        init(get_conn(key));
+                        reopenTcp = false;
+                    }
+                    socket = get_socket(key);
+                    send_(socket, request);
+                    int64_t value;
+                    uint64_t opNumInServer, syncNum;
+                    if (recv_unsynced_int_reply_(socket, &value, &opNumInServer, &syncNum)) {
+                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request, opNumInServer, syncNum);
+                    } else {
+                        fprintf(stderr, "Short message or duplicate. Req: %s\n", ((std::string)request).c_str());
+                    }
+                    return value;
+                } catch (connection_error& e) {
+                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
+                    if (!reopenTcp) {
+                        // avoid if trouble in re-initiating connection.
+                        handle_connection_error(socket);
+                    }
+                    reopenTcp = true;
+                    sleep(3);
+                    ++tryCount;
+                }
+            }
+        }
+
         int_type incr(const string_type & key) {
-            int socket = get_socket(key);
-            send_(socket, makecmd("INCR") << key);
-            return recv_int_reply_(socket);
+            return sendRecvInt(key, makecmd("INCR") << key <<
+                    std::to_string(clientId) << std::to_string(++lastRequestId));
         }
 
         template<typename INT_TYPE>
@@ -1683,15 +1748,12 @@ namespace redis {
         }
 
         void hmset(const string_type & key, const string_pair_vector & field_value_pairs) {
-            int socket = get_socket(key);
-            makecmd m("HMSET");
-            m << key;
-
+            makecmd request("HMSET");
+            request << key;
             for (size_t i = 0; i < field_value_pairs.size(); i++)
-                m << field_value_pairs[i].first << field_value_pairs[i].second;
-
-            send_(socket, m);
-            recv_ok_reply_(socket);
+                request << field_value_pairs[i].first << field_value_pairs[i].second;
+            request << std::to_string(clientId) << std::to_string(++lastRequestId);
+            sendRecvOk(key, request);
         }
 
         void hmget(const string_type & key, const string_vector & fields, string_vector & out) {
@@ -2074,10 +2136,10 @@ namespace redis {
         }
 
         /**
-         *
-         * @param socket
-         * @param opNum
-         * @param synced
+         * Receive one reply which has OK plus UnsyncedRpc tracking info.
+         * \param socket
+         * \param opNum
+         * \param synced
          * \return
          *      returns false if reply was OK (RIFL Duplicate), so no need for
          *      registering. (since this data was survived from crash.)
@@ -2108,10 +2170,49 @@ namespace redis {
                 throw protocol_error("argument is out of uint64_t range");
                 errno = 0;
             }
-            if (*opNum == 0) {
-                fprintf(stderr, "wrong opNum. response: %s\n", reply.c_str());
-                fflush(stderr);
-                //throw protocol_error("wrong opNum");
+            return true;
+        }
+
+        /**
+         * Receive one reply which has int value plus UnsyncedRpc tracking info.
+         * \param socket
+         * \param opNum
+         * \param synced
+         * \return
+         *      returns false if reply was OK (RIFL Duplicate), so no need for
+         *      registering. (since this data was survived from crash.)
+         */
+        bool recv_unsynced_int_reply_(int socket, int64_t* value,
+                                      uint64_t* opNum, uint64_t* synced) {
+            std::string line = read_line(socket);
+            if (line.empty())
+                throw protocol_error("invalid integer reply; empty");
+            if (line.substr(1,2) == REDIS_STATUS_REPLY_OK) {
+                fprintf(stderr, "RIFL duplicate returned? response: %s\n", line.c_str());
+                return false;
+            }
+            if (line[0] != REDIS_PREFIX_INT_REPLY)
+                throw protocol_error("unexpected prefix for integer reply");
+
+            // Parse integer arguments.
+            const char* cstr = line.c_str();
+            char* end;
+            *value = std::strtoll(cstr + 1, &end, 10);
+            if (errno == ERANGE){
+                throw protocol_error("argument is out of uint64_t range");
+                errno = 0;
+            }
+            cstr = end;
+            *opNum = std::strtoull(cstr, &end, 10);
+            if (errno == ERANGE){
+                throw protocol_error("argument is out of uint64_t range");
+                errno = 0;
+            }
+            cstr = end;
+            *synced = std::strtoull(cstr, &end, 10);
+            if (errno == ERANGE){
+                throw protocol_error("argument is out of uint64_t range");
+                errno = 0;
             }
             return true;
         }
@@ -2431,6 +2532,7 @@ namespace redis {
         //int socket_;
         CONSISTENT_HASHER hasher_;
         uint64_t clientId; // Must not be 0. either random or assigned by server.
+    public:
         uint64_t lastRequestId;
         RAMCloud::UnsyncedRpcTracker tracker;
     };

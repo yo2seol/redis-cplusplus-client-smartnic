@@ -174,13 +174,15 @@ static bool recv_ok_reply_(int socket) {
     }
 
     if (line[0] != REDIS_PREFIX_STATUS_REPLY_VALUE &&
-            line[0] != REDIS_PREFIX_STATUS_REPLY_UNSYNCED) {
+            line[0] != REDIS_PREFIX_STATUS_REPLY_UNSYNCED &&
+            line[0] != REDIS_PREFIX_INT_REPLY) {
         fprintf(stderr, "Unexpected prefix. Resp: %s", line.c_str());
         throw redis::protocol_error("unexpected prefix for status reply");
     }
 
-    if (line.substr(1,2) != REDIS_STATUS_REPLY_OK) {
-        fprintf(stderr, "Unexpected OK response. Resp: %s", line.c_str());
+    if (line.substr(1,2) != REDIS_STATUS_REPLY_OK &&
+            line[0] != REDIS_PREFIX_INT_REPLY) {
+        fprintf(stderr, "Expected OK response. Resp: %s", line.c_str());
         throw redis::protocol_error("expected OK response");
     }
     return true;
