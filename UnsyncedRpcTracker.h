@@ -41,7 +41,7 @@ class UnsyncedRpcTracker {
   public:
     explicit UnsyncedRpcTracker();
     ~UnsyncedRpcTracker();
-    void registerUnsynced(int socket, int dbindex, const std::string & msg,
+    void registerUnsynced(int socket, int dbindex, const char* msg, int msgSize,
                           uint64_t opNumInServer, uint64_t syncedInServer);
     void updateSyncState(int socket, uint64_t syncedInServer);
     void flushSession(int socket, std::string hostIp, uint16_t replayPort);

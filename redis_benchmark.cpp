@@ -38,11 +38,16 @@
 using RAMCloud::Cycles;
 
 // Globals.
-const char* hostIp = "192.168.0.164";
+//const char* hostIp = "192.168.1.102";
+const char* hostIp = "rcmaster";
+//const char* witnessIps[] = {"192.168.1.104", "192.168.1.105"};
+const char* witnessIps[] = {"rc01", "rc02"};
+//const char* witnessIps[] = {"192.168.1.166", "192.168.1.167"};
 int objectSize = 100;   // Number of bytes for value payload.
 int count = 1000000;    // How many repeat
 int clientIndex = 0;    // ClientIndex as in RAMCloud clusterPerf.
 int threads = 1;        // How many client threads per machine to run benchmark.
+int numWitness = 0;// send requests to witness as well as master.
 
 redis::client* client;
 
@@ -144,7 +149,7 @@ writeDistRandom()
 
     // fill table first.
 //    for (int i = 0; i < numKeys; ++i) {
-    for (int i = 0; i < 1000; ++i) {
+    for (int i = 0; i < 10000; ++i) {
         makeKey(static_cast<int>(i), keyLength, key);
         genRandomString(value, objectSize);
 
@@ -194,6 +199,8 @@ writeDistRandom()
         valuesInLine++;
     }
     printf("\n");
+
+    PerfUtils::TimeTrace::print();
 
     delete(key);
     delete(value);
@@ -258,7 +265,7 @@ incrDistRandom()
         }
     }
     if (sum != count) {
-        fprintf(stderr, "Bad! Incr count: %d, Actual Sum: %lld, lastRpcId: %lld\n",
+        fprintf(stderr, "Bad! Incr count: %d, Actual Sum: %" PRId64 ", lastRpcId: %" PRIu64 "\n",
                 count, sum, client->lastRequestId);
     }
 
@@ -391,7 +398,8 @@ parseOptions(int argc, char* argv[]) {
         {"count", 'c', true},
         {"clientIndex", 'i', true},
         {"size", 's', true},
-        {"threads", 't', true}
+        {"threads", 't', true},
+        {"witness", 'w', true}
     };
     const int UNRECOGNIZED = ~0;
 
@@ -420,10 +428,12 @@ parseOptions(int argc, char* argv[]) {
                     }
                     optionArgument = argv[i+1];
                     optionId = optionSpecifiers[k].id;
-                    argc -= 2;
+                    //argc -= 2;
+                    i += 2;
                 } else {
                     optionId = optionSpecifiers[k].id;
-                    argc -= 1;
+                    //argc -= 1;
+                    i++;
                 }
                 break;
             }
@@ -440,6 +450,9 @@ parseOptions(int argc, char* argv[]) {
                 break;
             case 't':
                 threads = atoi(optionArgument);
+                break;
+            case 'w':
+                numWitness = atoi(optionArgument);
                 break;
             case UNRECOGNIZED:
                 i++;
@@ -459,7 +472,16 @@ main(int argc, char *argv[]) {
 
     parseOptions(argc, argv);
 
-    redis::client realClient(hostIp);
+    std::vector<std::string> witnessIpsVec;
+    std::vector<int> witnessMasterIdx;
+    if (numWitness) {
+        for (int i = 0; i < numWitness; ++i) {
+            const char* witnessIp = witnessIps[i];
+            witnessIpsVec.push_back(std::string(witnessIp, strlen(witnessIp)));
+            witnessMasterIdx.push_back(1);
+        }
+    }
+    redis::client realClient(hostIp, witnessIpsVec, witnessMasterIdx);
     client = &realClient;
 
     client->select(14);

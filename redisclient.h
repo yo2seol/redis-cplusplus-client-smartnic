@@ -58,9 +58,13 @@
 
 #include "anet.h"
 #include "UnsyncedRpcTracker.h"
+#include "MurmurHash3.h"
+#include "TimeTrace.h"
 
 #define REDIS_LBR                       "\r\n"
 #define REDIS_STATUS_REPLY_OK           "OK"
+#define REDIS_STATUS_REPLY_ACCEPT       "ACCEPT"
+#define REDIS_STATUS_REPLY_REJECT       "REJECT"
 #define REDIS_PREFIX_STATUS_REPLY_ERROR "-ERR "
 #define REDIS_PREFIX_STATUS_REPLY_RETRY "-RETRY "
 #define REDIS_PREFIX_STATUS_REPLY_LOADING "-LOADING "
@@ -71,6 +75,8 @@
 #define REDIS_PREFIX_MULTI_BULK_REPLY   '*'
 #define REDIS_PREFIX_INT_REPLY          ':'
 #define REDIS_WHITESPACE                " \f\n\r\t\v"
+
+using PerfUtils::TimeTrace;
 
 template<class Object >
 struct make;
@@ -90,7 +96,7 @@ namespace redis {
     struct connection_data {
 
         connection_data(const std::string & host = "localhost", uint16_t port = 6379, uint16_t replayPort = 6380, int dbindex = 0)
-        : host(host), port(port), replayPort(replayPort), dbindex(dbindex), socket(ANET_ERR) {
+        : host(host), witnessIps(), witnessBufferIndex(), port(port), replayPort(replayPort), dbindex(dbindex), socket(ANET_ERR),  witnessSockets() {
         }
 
         bool operator==(const connection_data & other) const {
@@ -105,12 +111,15 @@ namespace redis {
         }
 
         std::string host;
+        std::vector<std::string> witnessIps;
+        std::vector<int> witnessBufferIndex;
         boost::uint16_t port;
         boost::uint16_t replayPort;
         int dbindex;
 
     private:
         int socket;
+        std::vector<int> witnessSockets;
 
         template<typename CONSISTENT_HASHER>
         friend class base_client;
@@ -281,6 +290,221 @@ namespace redis {
         boost::optional<std::string> key_name_;
     };
 
+    class fastcmd {
+    public:
+
+        explicit fastcmd(int argc, const std::string & cmd_name) {
+            strbuf = inlineBuf;
+            bufSize = inlineBufSize;
+            strbuf[0] = '*';
+            appended = 1;
+            char* buf = strbuf + appended;
+            itoa(argc, buf, 10);
+            buf += strlen(buf);
+            memcpy(buf, newlineDollar, 3);
+            buf += 3;
+
+            itoa(cmd_name.length(), buf, 10);
+            buf += strlen(buf);
+            memcpy(buf, newline, 2);
+            buf += 2;
+            memcpy(buf, cmd_name.data(), cmd_name.length());
+            buf += cmd_name.length();
+            memcpy(buf, newlineDollar, 3);
+            buf += 3;
+            appended = buf - strbuf;
+        }
+
+        ~fastcmd() {
+            destroy();
+        }
+
+        inline fastcmd& append(const char* value, int size) {
+            ensureSpace(size + 15);
+            char* buf = strbuf + appended;
+
+            itoa(size, buf, 10);
+            buf += strlen(buf);
+            memcpy(buf, newline, 2);
+            buf += 2;
+            memcpy(buf, value, size);
+            buf += size;
+            memcpy(buf, newlineDollar, 3);
+            buf += 3;
+
+            appended = buf - strbuf;
+            return *this;
+        }
+
+        inline fastcmd& operator<<(const std::string& value) {
+            ensureSpace(value.length() + 15);
+            char* buf = strbuf + appended;
+
+            itoa(value.length(), buf, 10);
+            buf += strlen(buf);
+            memcpy(buf, newline, 2);
+            buf += 2;
+            memcpy(buf, value.data(), value.length());
+            buf += value.length();
+            memcpy(buf, newlineDollar, 3);
+            buf += 3;
+
+            appended = buf - strbuf;
+            return *this;
+        }
+
+        inline fastcmd& operator<<(const uint64_t datum) {
+            ensureSpace(30);
+            char* buf = strbuf + appended;
+            char* bufPosForIntLen = buf;
+            if (datum >= 1000000000) {
+                buf += 4; // 2 for int value, 2 for \r\n
+            } else {
+                buf += 3; // 1 for int value, 2 for \r\n
+            }
+
+            ulltoa(datum, buf, 10);
+            int datumLen = strlen(buf);
+            buf += datumLen;
+            memcpy(buf, newlineDollar, 3);
+            buf += 3;
+
+            itoa(datumLen, bufPosForIntLen, 10);
+            bufPosForIntLen += strlen(bufPosForIntLen);
+            memcpy(bufPosForIntLen, newline, 2);
+
+            appended = buf - strbuf;
+            return *this;
+        }
+
+        inline fastcmd& operator<<(const int datum) {
+            ensureSpace(20);
+            char* buf = strbuf + appended;
+            char* bufPosForIntLen = buf;
+            if (datum < 0) exit(1);
+            if (datum >= 1000000000) {
+                buf += 4; // 2 for int value, 2 for \r\n
+            } else {
+                buf += 3; // 1 for int value, 2 for \r\n
+            }
+
+            itoa(datum, buf, 10);
+            int datumLen = strlen(buf);
+            buf += datumLen;
+            memcpy(buf, newlineDollar, 3);
+            buf += 3;
+
+            itoa(datumLen, bufPosForIntLen, 10);
+            bufPosForIntLen += strlen(bufPosForIntLen);
+            memcpy(bufPosForIntLen, newline, 2);
+
+            appended = buf - strbuf;
+            return *this;
+        }
+
+        char* c_str() {
+            strbuf[appended - 1] = 0;
+            return strbuf;
+        }
+        int size() {
+            return appended - 1; // Don't count tailing '$'.
+        }
+        char* data() {
+            return strbuf;
+        }
+
+    private:
+        inline void ensureSpace(int size) {
+            if (appended + size > bufSize) {
+                char* newBuf = new char[bufSize * 2];
+                memcpy(newBuf, strbuf, appended);
+                destroy();
+                strbuf = newBuf;
+                bufSize = bufSize * 2;
+            }
+        }
+
+        void destroy() {
+            if (strbuf != inlineBuf) {
+                delete[] strbuf;
+            }
+        }
+
+        /**
+        * C++ version 0.4 char* style "itoa":
+        * Written by Lukás Chmela
+        * Released under GPLv3.
+        */
+        char* itoa(int value, char* result, int base) {
+           // check that the base if valid
+           if (base < 2 || base > 36) {
+               *result = '\0';
+               return result;
+           }
+
+           char* ptr = result, *ptr1 = result, tmp_char;
+           int tmp_value;
+
+           do {
+               tmp_value = value;
+               value /= base;
+               *ptr++ = "zyxwvutsrqponmlkjihgfedcba9876543210123456789abcdefghijklmnopqrstuvwxyz" [35 + (tmp_value - value * base)];
+           } while (value);
+
+           // Apply negative sign
+           if (tmp_value < 0) *ptr++ = '-';
+           *ptr-- = '\0';
+           while (ptr1 < ptr) {
+               tmp_char = *ptr;
+               *ptr-- = *ptr1;
+               *ptr1++ = tmp_char;
+           }
+           return result;
+        }
+
+        /**
+        * Modified version of C++ version 0.4 char* style "itoa":
+        * Takes 64-bit integer instead.
+        * Written by Lukás Chmela
+        * Released under GPLv3.
+        */
+        char* ulltoa(uint64_t value, char* result, int base) {
+           // check that the base if valid
+           if (base < 2 || base > 36) {
+               *result = '\0';
+               return result;
+           }
+
+           char* ptr = result, *ptr1 = result, tmp_char;
+           uint64_t tmp_value;
+
+           do {
+               tmp_value = value;
+               value /= base;
+               *ptr++ = "zyxwvutsrqponmlkjihgfedcba9876543210123456789abcdefghijklmnopqrstuvwxyz" [35 + (tmp_value - value * base)];
+           } while (value);
+
+           // Apply negative sign
+//           if (tmp_value < 0) *ptr++ = '-';
+           *ptr-- = '\0';
+           while (ptr1 < ptr) {
+               tmp_char = *ptr;
+               *ptr-- = *ptr1;
+               *ptr1++ = tmp_char;
+           }
+           return result;
+        }
+
+        char* strbuf;
+        int bufSize;
+        int appended = 0;
+        char inlineBuf[1000];
+        const static int inlineBufSize = 1000;
+
+        static constexpr const char* newline = "\r\n";
+        static constexpr const char* newlineDollar = "\r\n$";
+    };
+
     template<typename CONSISTENT_HASHER>
     class base_client;
 
@@ -399,6 +623,20 @@ namespace redis {
             }
             anetTcpNoDelay(NULL, con.socket);
             select(con.dbindex, con);
+
+            // Set up connection to witness.
+            if (con.witnessSockets.size() == con.witnessIps.size()) return;
+            con.witnessSockets.clear();
+            for (std::string witnessIp : con.witnessIps) {
+                int wsocket = anetTcpConnect(err, const_cast<char*>(witnessIp.c_str()), con.port);
+                if (wsocket == ANET_ERR) {
+                    std::ostringstream os;
+                    os << err << " (redis://" << witnessIp << ':' << con.port << ")";
+                    throw connection_error(os.str());
+                }
+                anetTcpNoDelay(NULL, wsocket);
+                con.witnessSockets.push_back(wsocket);
+            }
         }
 
     public:
@@ -412,13 +650,17 @@ namespace redis {
 
         typedef long int_type;
 
-        explicit base_client(const string_type & host = "localhost",
+        explicit base_client(const string_type & host,
+                const std::vector<string_type>& witnessIps = std::vector<string_type>(),
+                const std::vector<int>& witnessBufferIndex = std::vector<int>(),
                 uint16_t port = 6379, uint16_t replayPort = 6380, int_type dbindex = 0) {
             srand(std::time(NULL));
             clientId = rand() + 1; // Must not be 0.
             lastRequestId = 0;
             connection_data con;
             con.host = host;
+            con.witnessIps = witnessIps;
+            con.witnessBufferIndex = witnessBufferIndex;
             con.port = port;
             con.replayPort = replayPort;
             con.dbindex = dbindex;
@@ -507,45 +749,12 @@ namespace redis {
 
         void set(const string_type & key,
                 const string_type & value) {
-
-            makecmd request("SET");
-            request << key << value << std::to_string(clientId) << std::to_string(++lastRequestId);
+            TimeTrace::record("Staring set operation.");
+//            makecmd request("SET");
+//            request << key << value << std::to_string(clientId) << std::to_string(++lastRequestId);
+            fastcmd request(5, "SET");
+            request << key << value << clientId << ++lastRequestId;
             sendRecvOk(key, request);
-//            bool reopenTcp = false;
-//            int tryCount = 0;
-//            int socket;
-//            while (1) {
-//                try {
-//                    if (reopenTcp) {
-//                        init(get_conn(key));
-//                        reopenTcp = false;
-//                    }
-//                    socket = get_socket(key);
-//                    send_(socket, request);
-//                    uint64_t opNumInServer, syncNum;
-//                    if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
-//                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request, opNumInServer, syncNum);
-//                    } else {
-//                        fprintf(stderr, "Short message or duplicate. Req: %s\n", ((std::string)request).c_str());
-//                    }
-//                    break;
-//                } catch (connection_error& e) {
-//                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
-//                    if (!reopenTcp) {
-//                        // avoid if trouble in re-initiating connection.
-//                        handle_connection_error(socket);
-//                    }
-//                    reopenTcp = true;
-//                    sleep(1);
-//                    ++tryCount;
-//                }
-////                catch (retry_error& e) {
-////                    fprintf(stderr, "retry error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
-////                    reopenTcp = false;
-////                    sleep(1);
-////                    ++tryCount;
-////                }
-//            }
         }
 
         void mset(const string_vector & keys, const string_vector & values) {
@@ -830,7 +1039,66 @@ namespace redis {
             return recv_bulk_reply_(socket);
         }
 
-        void sendRecvOk(const string_type& key, const std::string& request) {
+        void sendWitnessRecord(const std::string& key, fastcmd& request) {
+            connection_data con = get_conn(key);
+
+            int keyHash;
+            MurmurHash3_x86_32(key.data(), key.size(), con.dbindex, &keyHash);
+            int hashIndex = keyHash & 4095;
+//            fprintf(stderr, "dbindex: %d, hashIndex: %d clientId: %lld, requestId: %lld\n",
+//                    con.dbindex, hashIndex, clientId, lastRequestId);
+
+            int index = 0;
+            for (int socket : con.witnessSockets) {
+                fastcmd cmd(6, "wrecord");
+                cmd << con.witnessBufferIndex[index] << hashIndex << clientId
+                        << lastRequestId;
+                cmd.append(request.data(), request.size());
+                TimeTrace::record("constructed witness record request string.");
+                send_(socket, cmd.data(), cmd.size());
+                TimeTrace::record("constructed witness record sent.");
+                ++index;
+            }
+        }
+
+        /**
+         * Receive one reply which has witness record result.
+         * \return
+         *      returns true if accepted. false if rejected.
+         */
+        bool recv_witness_reply_(int socket) {
+            std::string reply = recv_single_line_reply_(socket);
+            TimeTrace::record("Received reply from a witness.");
+            std::string content = reply.substr(0,6);
+            if (content == REDIS_STATUS_REPLY_REJECT) {
+                return false;
+            } else if (content == REDIS_STATUS_REPLY_ACCEPT) {
+                return true;
+            } else {
+                throw protocol_error("Reply format for witness record request doesn't match.");
+            }
+        }
+
+        bool receiveWitnessReplay(const std::string& key) {
+            connection_data con = get_conn(key);
+
+            if (con.witnessSockets.size() < con.witnessIps.size()) {
+                return false;
+            }
+
+            bool accepted = true;
+            for (int socket : con.witnessSockets) {
+                if (!recv_witness_reply_(socket)) {
+//                    fprintf(stderr, "witness rejected! key: %s, socket: %d",
+//                            key.c_str(), socket);
+                    accepted = false;
+                }
+            }
+            return accepted;
+        }
+
+        void sendRecvOk(const string_type& key, fastcmd& request) {
+            TimeTrace::record("constructed request string.");
             bool reopenTcp = false;
             int tryCount = 0;
             int socket;
@@ -841,16 +1109,27 @@ namespace redis {
                         reopenTcp = false;
                     }
                     socket = get_socket(key);
-                    send_(socket, request);
+                    TimeTrace::record("found socket.");
+                    send_(socket, request.data(), request.size());
+                    TimeTrace::record("Sent to master.");
+                    sendWitnessRecord(key, request);
+
                     uint64_t opNumInServer, syncNum;
                     if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
-                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request, opNumInServer, syncNum);
+                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request.data(), request.size(), opNumInServer, syncNum);
+                        TimeTrace::record("Registered unsynced.");
+                        if (!receiveWitnessReplay(key)) {
+                            // TODO: send sync rpc?? well...
+                            get(key); // hack to avoid implementing new rpc..
+                            TimeTrace::record("Synced master due to conflict.");
+                        }
+                        TimeTrace::record("Received reply from all witness.");
                     } else {
-                        fprintf(stderr, "Short message or duplicate. Req: %s\n", ((std::string)request).c_str());
+                        fprintf(stderr, "Short message or duplicate. Req: %s\n", request.c_str());
                     }
                     break;
                 } catch (connection_error& e) {
-                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
+                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, request.c_str());
                     if (!reopenTcp) {
                         // avoid if trouble in re-initiating connection.
                         handle_connection_error(socket);
@@ -877,7 +1156,7 @@ namespace redis {
                     int64_t value;
                     uint64_t opNumInServer, syncNum;
                     if (recv_unsynced_int_reply_(socket, &value, &opNumInServer, &syncNum)) {
-                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request, opNumInServer, syncNum);
+                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request.data(), request.size(), opNumInServer, syncNum);
                     } else {
                         fprintf(stderr, "Short message or duplicate. Req: %s\n", ((std::string)request).c_str());
                     }
@@ -1748,11 +2027,11 @@ namespace redis {
         }
 
         void hmset(const string_type & key, const string_pair_vector & field_value_pairs) {
-            makecmd request("HMSET");
+            fastcmd request(2 + 2 * field_value_pairs.size() + 2, "HMSET");
             request << key;
             for (size_t i = 0; i < field_value_pairs.size(); i++)
                 request << field_value_pairs[i].first << field_value_pairs[i].second;
-            request << std::to_string(clientId) << std::to_string(++lastRequestId);
+            request << clientId << ++lastRequestId;
             sendRecvOk(key, request);
         }
 
@@ -2099,6 +2378,11 @@ namespace redis {
                 throw connection_error(strerror(errno));
 //            handle_connection_error(socket);
         }
+        void send_(int socket, const char* data, int size) {
+            if (anetWrite(socket, const_cast<char *>(data), size) == -1)
+                throw connection_error(strerror(errno));
+//            handle_connection_error(socket);
+        }
 
         void handle_connection_error(int socket) {
             connection_data conn = connections_[get_connIdx(socket)];
@@ -2146,6 +2430,7 @@ namespace redis {
          */
         bool recv_unsynced_ok_reply_(int socket, uint64_t* opNum, uint64_t* synced) {
             std::string reply = recv_single_line_reply_(socket);
+            TimeTrace::record("Received reply from master.");
 
             if (reply.substr(0,2) != REDIS_STATUS_REPLY_OK)
                 throw protocol_error("expected OK response");
@@ -2170,6 +2455,7 @@ namespace redis {
                 throw protocol_error("argument is out of uint64_t range");
                 errno = 0;
             }
+            TimeTrace::record("Parsed reply from master.");
             return true;
         }
 

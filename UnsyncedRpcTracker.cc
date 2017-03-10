@@ -72,16 +72,16 @@ UnsyncedRpcTracker::~UnsyncedRpcTracker()
  */
 void
 UnsyncedRpcTracker::registerUnsynced(int socket, int dbindex,
-                                     const std::string & msg,
+                                     const char* msg, int msgSize,
                                      uint64_t opNumInServer,
                                      uint64_t syncedInServer)
 {
     Lock lock(mutex);
     Master* master = getOrInitMasterRecord(socket);
 
-    int size = msg.size();
+    int size = msgSize;
     char* data = new char[size];
-    std::memcpy(data, msg.data(), size);
+    std::memcpy(data, msg, size);
 
     if (opNumInServer <= lastOpNum) {
         printf("Error. duplicate request? opNumInServer %lld, lastOpNum %lld\n",
