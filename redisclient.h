@@ -381,7 +381,10 @@ namespace redis {
             ensureSpace(20);
             char* buf = strbuf + appended;
             char* bufPosForIntLen = buf;
-            if (datum < 0) exit(1);
+            if (datum < 0) {
+                fprintf(stderr, "negative integer is not supported in fast cmd.");
+                exit(1);
+            }
             if (datum >= 1000000000) {
                 buf += 4; // 2 for int value, 2 for \r\n
             } else {
@@ -1042,21 +1045,21 @@ namespace redis {
         void sendWitnessRecord(const std::string& key, fastcmd& request) {
             connection_data con = get_conn(key);
 
-            int keyHash;
+            uint32_t keyHash;
             MurmurHash3_x86_32(key.data(), key.size(), con.dbindex, &keyHash);
-            int hashIndex = keyHash & 4095;
+            int hashIndex = keyHash & 1023;
 //            fprintf(stderr, "dbindex: %d, hashIndex: %d clientId: %lld, requestId: %lld\n",
 //                    con.dbindex, hashIndex, clientId, lastRequestId);
 
             int index = 0;
             for (int socket : con.witnessSockets) {
-                fastcmd cmd(6, "wrecord");
-                cmd << con.witnessBufferIndex[index] << hashIndex << clientId
-                        << lastRequestId;
+                fastcmd cmd(7, "wrecord");
+                cmd << con.witnessBufferIndex[index] << hashIndex << (uint64_t)keyHash
+                        << clientId << lastRequestId;
                 cmd.append(request.data(), request.size());
-                TimeTrace::record("constructed witness record request string.");
+                TimeTrace::record("Constructed witness record request string.");
                 send_(socket, cmd.data(), cmd.size());
-                TimeTrace::record("constructed witness record sent.");
+                TimeTrace::record("Sent to witness");
                 ++index;
             }
         }

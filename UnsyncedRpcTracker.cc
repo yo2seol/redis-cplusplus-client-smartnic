@@ -84,7 +84,7 @@ UnsyncedRpcTracker::registerUnsynced(int socket, int dbindex,
     std::memcpy(data, msg, size);
 
     if (opNumInServer <= lastOpNum) {
-        printf("Error. duplicate request? opNumInServer %lld, lastOpNum %lld\n",
+        printf("Error. duplicate request? opNumInServer %" PRIu64 ", lastOpNum %" PRIu64 "\n",
                 opNumInServer, lastOpNum);
     }
     lastOpNum = opNumInServer;
