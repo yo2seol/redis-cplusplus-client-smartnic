@@ -26,6 +26,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <thread>
+#include "Atomic.h"
 
 #include <sys/time.h>
 #include <xmmintrin.h>
@@ -35,6 +37,7 @@
 #include "redisclient.h"
 #include "Cycles.h"
 #include <iostream>
+#include <atomic>
 using RAMCloud::Cycles;
 
 // Globals.
@@ -47,9 +50,11 @@ int objectSize = 100;   // Number of bytes for value payload.
 int count = 1000000;    // How many repeat
 int clientIndex = 0;    // ClientIndex as in RAMCloud clusterPerf.
 int threads = 1;        // How many client threads per machine to run benchmark.
+                        // used for throughput benchmark only.
 int numWitness = 0;// send requests to witness as well as master.
 
 redis::client* client;
+//redis::client* multiClient[1000];
 
 // Common helper functions.
 uint64_t
@@ -128,6 +133,75 @@ void makeKey(int value, uint32_t length, char* dest)
     memset(dest, 'x', length);
     std::string str = std::to_string(value);
     memcpy(dest, str.c_str(), str.size());
+}
+
+PerfUtils::Atomic<int64_t> writeThroughputTotalWrites(0);
+
+void
+writeThroughputRunner(int tid) {
+    int numKeys = 2000000;
+    const uint16_t keyLength = 30;
+    char* key = new char[keyLength + 1];
+    char* value = new char[objectSize + 1];
+
+    redis::client* clientPtr = client;
+    if (tid != 0) {
+        std::vector<std::string> witnessIpsVec;
+        std::vector<int> witnessMasterIdx;
+        if (numWitness) {
+            for (int i = 0; i < numWitness; ++i) {
+                const char* witnessIp = witnessIps[i];
+                witnessIpsVec.push_back(std::string(witnessIp, strlen(witnessIp)));
+                witnessMasterIdx.push_back(1);
+            }
+        }
+        clientPtr = new redis::client(hostIp, witnessIpsVec, witnessMasterIdx);
+    }
+
+//    printf("New thread created! tid: %d clienId Assigned: %" PRIu64 ", rpcId: %" PRIu64 "\n", tid, multiClient[tid]->clientId, multiClient[tid]->lastRequestId);
+    uint64_t writeCount = 0;
+    while(true) {
+        makeKey(static_cast<int>(generateRandom() % numKeys), keyLength, key);
+        genRandomString(value, objectSize);
+        clientPtr->set(std::string(key, keyLength), std::string(value, objectSize));
+        writeCount++;
+        if (writeCount % 1000 == 0) {
+            writeThroughputTotalWrites.add(1000);
+        }
+    }
+}
+
+void
+writeThroughput()
+{
+    Cycles::init();
+    // Add startup delay.
+    int delayInSec = 10;
+    std::vector<std::thread> stdthreads;
+    int lastWriteTotal = 0;
+    uint64_t lastPrintTime = Cycles::rdtsc();
+    for (int tid = 0; tid < threads; ++tid) {
+        stdthreads.push_back(std::thread(&writeThroughputRunner, tid));
+        Cycles::sleep(delayInSec*1000000);
+//        sleep(10);
+        uint64_t currentTime = Cycles::rdtsc();
+        printf("Started thread %d. Throughput: %7.2f kops/sec\n", tid,
+                (writeThroughputTotalWrites - lastWriteTotal) * 1e3 /
+                Cycles::toMicroseconds(currentTime - lastPrintTime));
+        lastPrintTime = currentTime;
+        lastWriteTotal = writeThroughputTotalWrites;
+    }
+    printf("All threads were started.\n");
+    while(true) {
+        Cycles::sleep(delayInSec*1000000);
+
+        uint64_t currentTime = Cycles::rdtsc();
+        printf("Total threads: %d. Throughput: %7.2f kops/sec\n", threads,
+                (writeThroughputTotalWrites - lastWriteTotal) * 1e3 /
+                Cycles::toMicroseconds(currentTime - lastPrintTime));
+        lastPrintTime = currentTime;
+        lastWriteTotal = writeThroughputTotalWrites;
+    }
 }
 
 // Write or overwrite randomly-chosen objects from a large table (so that there
@@ -468,6 +542,7 @@ void signal_callback_handler(int signum) {
 
 int
 main(int argc, char *argv[]) {
+    srand(std::time(NULL));
     /* Catch Signal Handler SIGPIPE */
     signal(SIGPIPE, signal_callback_handler);
 
@@ -484,6 +559,9 @@ main(int argc, char *argv[]) {
     }
     redis::client realClient(hostIp, witnessIpsVec, witnessMasterIdx);
     client = &realClient;
+//    for (int tid = 0; tid < threads; tid++) {
+//        multiClient[tid] = new redis::client(hostIp, witnessIpsVec, witnessMasterIdx);
+//    }
 
     client->select(14);
     client->flushdb();
@@ -494,7 +572,13 @@ main(int argc, char *argv[]) {
         incrDistRandom();
     } else if (strncmp("hmsetDistRandom", argv[1], 20) == 0) {
         hmsetDistRandom();
+    } else if (strncmp("writeThroughput", argv[1], 20) == 0) {
+        writeThroughput();
     } else {
         printf("no test was selected. (Provided argv[0]: %s\n", argv[0]);
     }
+
+//    for (int tid = 0; tid < threads; tid++) {
+//        delete multiClient[tid];
+//    }
 }

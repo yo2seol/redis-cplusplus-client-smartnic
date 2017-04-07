@@ -657,7 +657,6 @@ namespace redis {
                 const std::vector<string_type>& witnessIps = std::vector<string_type>(),
                 const std::vector<int>& witnessBufferIndex = std::vector<int>(),
                 uint16_t port = 6379, uint16_t replayPort = 6380, int_type dbindex = 0) {
-            srand(std::time(NULL));
             clientId = rand() + 1; // Must not be 0.
             lastRequestId = 0;
             connection_data con;
@@ -1117,16 +1116,21 @@ namespace redis {
                     TimeTrace::record("Sent to master.");
                     sendWitnessRecord(key, request);
 
+                    bool shouldSync = false;
+                    if (!receiveWitnessReplay(key)) {
+                        shouldSync = true;
+                    }
+                    TimeTrace::record("Received reply from all witness.");
+
                     uint64_t opNumInServer, syncNum;
                     if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
                         tracker.registerUnsynced(socket, get_conn(key).dbindex, request.data(), request.size(), opNumInServer, syncNum);
                         TimeTrace::record("Registered unsynced.");
-                        if (!receiveWitnessReplay(key)) {
+                        if (shouldSync) {
                             // TODO: send sync rpc?? well...
                             get(key); // hack to avoid implementing new rpc..
                             TimeTrace::record("Synced master due to conflict.");
                         }
-                        TimeTrace::record("Received reply from all witness.");
                     } else {
                         fprintf(stderr, "Short message or duplicate. Req: %s\n", request.c_str());
                     }
@@ -2820,8 +2824,8 @@ namespace redis {
         std::vector<connection_data> connections_;
         //int socket_;
         CONSISTENT_HASHER hasher_;
-        uint64_t clientId; // Must not be 0. either random or assigned by server.
     public:
+        uint64_t clientId; // Must not be 0. either random or assigned by server.
         uint64_t lastRequestId;
         RAMCloud::UnsyncedRpcTracker tracker;
     };
