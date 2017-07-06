@@ -69,10 +69,10 @@ def print_cdf_from_file(filename):
     result = []
     print("%8.2f    %8.3f" % (0.0, 0.0))
     print("%8.2f    %8.3f" % (numbers[0], float(1)/len(numbers)))
-    for i in range(1, 100):
-        print("%8.2f    %8.3f" % (numbers[int(len(numbers)*float(i)/100)], float(i)/100))
-    print("%8.2f    %8.3f" % (numbers[int(len(numbers)*999/1000)], .999))
-    print("%8.2f    %9.4f" % (numbers[int(len(numbers)*9999/10000)], .9999))
+    for i in range(1, 1000):
+        print("%8.2f    %8.3f" % (numbers[int(len(numbers)*float(i)/1000)], float(i)/1000))
+#    print("%8.2f    %8.3f" % (numbers[int(len(numbers)*999/1000)], .999))
+#    print("%8.2f    %9.4f" % (numbers[int(len(numbers)*9999/10000)], .9999))
     print("%8.2f    %8.3f" % (numbers[-1], 1.0))
 
 def print_rcdf_from_file(filename):

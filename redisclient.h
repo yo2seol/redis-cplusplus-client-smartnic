@@ -357,13 +357,14 @@ namespace redis {
             ensureSpace(30);
             char* buf = strbuf + appended;
             char* bufPosForIntLen = buf;
-            if (datum >= 1000000000) {
+            if (datum >= 0x40000000000000) { // TODO: check for correct number.
                 buf += 4; // 2 for int value, 2 for \r\n
             } else {
                 buf += 3; // 1 for int value, 2 for \r\n
             }
 
-            ulltoa(datum, buf, 10);
+            ulltoa64(buf, 30 - 4, datum);
+//            ulltoa(datum, buf, 10);
             int datumLen = strlen(buf);
             buf += datumLen;
             memcpy(buf, newlineDollar, 3);
@@ -496,6 +497,33 @@ namespace redis {
                *ptr1++ = tmp_char;
            }
            return result;
+        }
+
+        /**
+         * Encode unsigned 64-bit integer with 64-base ASCII encoding.
+         */
+        int ulltoa64(char* dst, size_t dstlen, long long svalue) {
+            char* ptr = dst, *ptr1 = dst, tmp_char;
+            uint64_t tmp_value;
+            size_t plen = 0;
+
+            do {
+                if (plen >= dstlen) {
+                    return 0; // Error. Not enough space.
+                }
+                tmp_value = svalue & 63;
+                svalue >>= 6;
+                *ptr++ = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=" [tmp_value];
+                plen++;
+            } while (svalue);
+
+            *ptr-- = '\0';
+            while (ptr1 < ptr) {
+                tmp_char = *ptr;
+                *ptr-- = *ptr1;
+                *ptr1++ = tmp_char;
+            }
+            return (int)plen;
         }
 
         char* strbuf;
@@ -1128,7 +1156,9 @@ namespace redis {
                         TimeTrace::record("Registered unsynced.");
                         if (shouldSync) {
                             // TODO: send sync rpc?? well...
-                            get(key); // hack to avoid implementing new rpc..
+//                            get(key); // hack to avoid implementing new rpc..
+                            // Actually, this doesn't work for hmset. need to implement
+                            // sync-only command..
                             TimeTrace::record("Synced master due to conflict.");
                         }
                     } else {
@@ -1148,7 +1178,7 @@ namespace redis {
             }
         }
 
-        int_type sendRecvInt(const string_type& key, const std::string& request) {
+        int_type sendRecvInt(const string_type& key, fastcmd& request) {
             bool reopenTcp = false;
             int tryCount = 0;
             int socket;
@@ -1159,17 +1189,27 @@ namespace redis {
                         reopenTcp = false;
                     }
                     socket = get_socket(key);
-                    send_(socket, request);
+                    send_(socket, request.data(), request.size());
+                    sendWitnessRecord(key, request);
+                    bool shouldSync = false;
+                    if (!receiveWitnessReplay(key)) {
+                        shouldSync = true;
+                    }
                     int64_t value;
                     uint64_t opNumInServer, syncNum;
                     if (recv_unsynced_int_reply_(socket, &value, &opNumInServer, &syncNum)) {
                         tracker.registerUnsynced(socket, get_conn(key).dbindex, request.data(), request.size(), opNumInServer, syncNum);
+                        if (shouldSync) {
+                            // TODO: send sync rpc?? well...
+                            get(key); // hack to avoid implementing new rpc..
+                            TimeTrace::record("Synced master due to conflict.");
+                        }
                     } else {
-                        fprintf(stderr, "Short message or duplicate. Req: %s\n", ((std::string)request).c_str());
+                        fprintf(stderr, "Short message or duplicate. Req: %s\n", request.c_str());
                     }
                     return value;
                 } catch (connection_error& e) {
-                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, ((std::string)request).c_str());
+                    fprintf(stderr, "connection error happened.. (trial count: %d) Req: %s\n", tryCount, request.c_str());
                     if (!reopenTcp) {
                         // avoid if trouble in re-initiating connection.
                         handle_connection_error(socket);
@@ -1182,8 +1222,9 @@ namespace redis {
         }
 
         int_type incr(const string_type & key) {
-            return sendRecvInt(key, makecmd("INCR") << key <<
-                    std::to_string(clientId) << std::to_string(++lastRequestId));
+            fastcmd request(4, "INCR");
+            request << key << clientId << ++lastRequestId;
+            return sendRecvInt(key, request);
         }
 
         template<typename INT_TYPE>
@@ -1436,9 +1477,12 @@ namespace redis {
 
         int_type lpush(const string_type & key,
                 const string_type & value) {
-            int socket = get_socket(key);
-            send_(socket, makecmd("LPUSH") << key << value);
-            return recv_int_reply_(socket);
+            fastcmd request(5, "LPUSH");
+            request << key << value << clientId << ++lastRequestId;
+            return sendRecvInt(key, request);
+//            int socket = get_socket(key);
+//            send_(socket, makecmd("LPUSH") << key << value);
+//            return recv_int_reply_(socket);
         }
 
         int_type llen(const string_type & key) {
@@ -2426,6 +2470,54 @@ namespace redis {
                 throw protocol_error("expected OK response");
         }
 
+        /* Convert a string of 64-base encoded integer into a long long.
+         * Returns 1 if the string could be parsed into a (non-overflowing) long long,
+         * 0 otherwise. The value will be set to the parsed value when appropriate. */
+        int base64int2ull(const char *s, size_t slen, uint64_t *value) {
+            uint64_t v = 0;
+            const char *p = s;
+            uint plen = 0;
+        //    int base64inv[128];
+        //    const char* code = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+        //    size_t codeLen = strlen(code);
+        //    for (int i = 0; i < 128; ++i) {
+        //        base64inv[i] = -1;
+        //    }
+        //    for (uint i = 0; i < codeLen; ++i) {
+        //        base64inv[(uint)code[i]] = i;
+        //    }
+        //
+        //    printf("{");
+        //    for (int i = 0; i < 128; ++i) {
+        //        printf("%d, ", base64inv[i]);
+        //    }
+        //    printf("}");
+
+            // This table is generated by the code above.
+            int base64inv[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                               -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                               -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                               -1, 62, -1, -1, -1, 63, 52, 53, 54, 55, 56, 57, 58, 59,
+                               60, 61, -1, -1, -1, 64, -1, -1, -1, 0, 1, 2, 3, 4, 5,
+                               6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                               21, 22, 23, 24, 25, -1, -1, -1, -1, -1, -1, 26, 27, 28,
+                               29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
+                               43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1};
+
+            while (plen < slen && p[0] != 0) {
+                int digit = base64inv[(uint)p[0]];
+                if (digit < 0) {
+                    return 0; // error!
+                }
+                v <<= 6;
+                v += digit;
+                p++;
+                plen++;
+            }
+            *value = v;
+            return 1;
+        }
+
         /**
          * Receive one reply which has OK plus UnsyncedRpc tracking info.
          * \param socket
@@ -2449,19 +2541,29 @@ namespace redis {
             }
 
             // Parse integer arguments.
-            const char* cstr = reply.c_str();
-            char* end;
-            *opNum = std::strtoull(cstr + 3, &end, 10);
-            if (errno == ERANGE){
-                throw protocol_error("argument is out of uint64_t range");
-                errno = 0;
-            }
-            cstr = end;
-            *synced = std::strtoull(cstr, &end, 10);
-            if (errno == ERANGE){
-                throw protocol_error("argument is out of uint64_t range");
-                errno = 0;
-            }
+//            const char* cstr = reply.c_str();
+//            char* end;
+//            *opNum = std::strtoull(cstr + 3, &end, 10);
+//            if (errno == ERANGE){
+//                throw protocol_error("argument is out of uint64_t range");
+//                errno = 0;
+//            }
+//            cstr = end;
+//            *synced = std::strtoull(cstr, &end, 10);
+//            if (errno == ERANGE){
+//                throw protocol_error("argument is out of uint64_t range");
+//                errno = 0;
+//            }
+
+            char str[40];
+            strncpy(str, reply.c_str() + 3, 40);
+
+            char *token = std::strtok(str, " ");
+            base64int2ull(token, 100, opNum);
+
+            token = std::strtok(NULL, " ");
+            base64int2ull(token, 100, synced);
+
             TimeTrace::record("Parsed reply from master.");
             return true;
         }
@@ -2515,7 +2617,7 @@ namespace redis {
 
             if (line[0] != prefix) {
 #ifndef NDEBUG
-                std::cerr << "unexpected prefix for bulk reply (expected '" << prefix << "' but got '" << line[0] << "')" << std::endl;
+                std::cerr << "unexpected prefix for bulk reply (expected '" << prefix << "' but got '" << line << "')" << std::endl;
 #endif // NDEBUG
                 throw protocol_error("unexpected prefix for bulk reply");
             }

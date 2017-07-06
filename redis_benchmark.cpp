@@ -284,8 +284,8 @@ void
 incrDistRandom()
 {
     usleep(500);
-//    int numKeys = 2000000;
-    int numKeys = 10000; // For development only.
+    int numKeys = 2000000;
+//    int numKeys = 10000; // For development only.
     if (clientIndex != 0)
         return;
 
@@ -369,8 +369,8 @@ void
 hmsetDistRandom()
 {
     usleep(500);
-//    int numKeys = 2000000;
-    int numKeys = 10000; // For development only.
+    int numKeys = 2000000;
+//    int numKeys = 10000; // For development only.
     if (clientIndex != 0)
         return;
 
