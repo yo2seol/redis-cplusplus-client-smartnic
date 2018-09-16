@@ -2,11 +2,11 @@
 
 VPATH = tests
 
-CFLAGS?= -std=c++11 -pedantic -O3 -Wall -DNEBUG -W
+CFLAGS?= -std=c++11 -pedantic -O3 -Wall -DNEBUG -W -Wno-deprecated-register -Wno-unused-parameter
 #CFLAGS?= -std=c++11 -pedantic -O3 -W -DDEBUG -g
 CC = g++
 
-CLIENTOBJS = anet.o
+CLIENTOBJS = anet.o udp.o
 LIBNAME = libredisclient.a
 
 #TESTAPP = test_client
@@ -49,6 +49,7 @@ log:
 	git log '--pretty=format:%ad %s' --date=short > Changelog
 
 anet.o:                     anet.c fmacros.h anet.h
+udp.o:						udp.c udp.h
 redis_benchmark.o:	    redisclient.h redis_benchmark.cpp Cycles.h UnsyncedRpcTracker.h MurmurHash3.h
 TimeTrace.o:		    TimeTrace.h Atomic.h
 Cycles.o:		    Cycles.h

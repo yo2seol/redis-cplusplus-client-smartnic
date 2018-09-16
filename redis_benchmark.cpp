@@ -40,6 +40,19 @@
 #include <atomic>
 using RAMCloud::Cycles;
 
+#ifdef __APPLE__
+struct random_data
+  {
+    int32_t *fptr;		/* Front pointer.  */
+    int32_t *rptr;		/* Rear pointer.  */
+    int32_t *state;		/* Array of state values.  */
+    int rand_type;		/* Type of random number generator.  */
+    int rand_deg;		/* Degree of random number generator.  */
+    int rand_sep;		/* Distance between front and rear.  */
+    int32_t *end_ptr;		/* Pointer behind state table.  */
+  };
+#endif
+
 // Globals.
 //const char* hostIp = "192.168.1.102";
 const char* hostIp = "rcmaster";
@@ -82,16 +95,27 @@ generateRandom()
         close(fd);
         assert(bytesRead == sizeof(seed));
         statebuf = static_cast<char*>(malloc(STATE_BYTES));
+#ifdef __APPLE__
+        // TODO: Change to linux
+        initstate(seed, statebuf, STATE_BYTES);
+#else
         initstate_r(seed, statebuf, STATE_BYTES, &buf);
+#endif
     }
 
     // Each call to random returns 31 bits of randomness,
     // so we need three to get 64 bits of randomness.
     static_assert(RAND_MAX >= (1 << 31), "RAND_MAX too small");
     int32_t lo, mid, hi;
+#ifdef __APPLE__
+    lo = arc4random();
+    mid = arc4random();
+    hi = arc4random();
+#else
     random_r(&buf, &lo);
     random_r(&buf, &mid);
     random_r(&buf, &hi);
+#endif
     uint64_t r = (((uint64_t(hi) & 0x7FFFFFFF) << 33) | // NOLINT
                   ((uint64_t(mid) & 0x7FFFFFFF) << 2)  | // NOLINT
                   (uint64_t(lo) & 0x00000003)); // NOLINT
@@ -276,8 +300,8 @@ writeDistRandom()
 
     PerfUtils::TimeTrace::print();
 
-    delete(key);
-    delete(value);
+    delete[] key;
+    delete[] value;
 }
 
 void
@@ -359,7 +383,7 @@ incrDistRandom()
     }
     printf("\n");
 
-    delete(key);
+    delete [] key;
 }
 
 // Write or overwrite randomly-chosen objects from a large table (so that there
@@ -448,8 +472,8 @@ hmsetDistRandom()
     }
     printf("\n");
 
-    delete(key);
-    delete(value);
+    delete [] key;
+    delete [] value;
 }
 
 /**

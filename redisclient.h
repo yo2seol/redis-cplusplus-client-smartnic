@@ -57,6 +57,7 @@
 #include <boost/variant.hpp>
 
 #include "anet.h"
+#include "udp.h"
 #include "UnsyncedRpcTracker.h"
 #include "MurmurHash3.h"
 #include "TimeTrace.h"
@@ -75,6 +76,11 @@
 #define REDIS_PREFIX_MULTI_BULK_REPLY   '*'
 #define REDIS_PREFIX_INT_REPLY          ':'
 #define REDIS_WHITESPACE                " \f\n\r\t\v"
+
+#define SRC_ADDR "192.168.1.1"
+#define WITNESS_PORT 1111
+
+typedef unsigned long ulong;
 
 using PerfUtils::TimeTrace;
 
@@ -659,14 +665,8 @@ namespace redis {
             if (con.witnessSockets.size() == con.witnessIps.size()) return;
             con.witnessSockets.clear();
             for (std::string witnessIp : con.witnessIps) {
-                int wsocket = anetTcpConnect(err, const_cast<char*>(witnessIp.c_str()), con.port);
-                if (wsocket == ANET_ERR) {
-                    std::ostringstream os;
-                    os << err << " (redis://" << witnessIp << ':' << con.port << ")";
-                    throw connection_error(os.str());
-                }
-                anetTcpNoDelay(NULL, wsocket);
-                con.witnessSockets.push_back(wsocket);
+                int s = createSocket();
+                con.witnessSockets.push_back(s);
             }
         }
 
@@ -1028,7 +1028,7 @@ namespace redis {
             std::map< int, boost::optional<makecmd> > socket_commands;
 
             for (size_t i = 0; i < key_value_pairs.size(); i++) {
-                int socket = get_socket(keys);
+                int socket = get_socket(key_value_pairs[i].first);
                 boost::optional<makecmd> & cmd = socket_commands[socket];
                 if (!cmd)
                     cmd = makecmd("MSETNX");
@@ -1078,16 +1078,16 @@ namespace redis {
 //            fprintf(stderr, "dbindex: %d, hashIndex: %d clientId: %lld, requestId: %lld\n",
 //                    con.dbindex, hashIndex, clientId, lastRequestId);
 
-            int index = 0;
-            for (int socket : con.witnessSockets) {
+            for (unsigned long idx = 0; idx < con.witnessSockets.size(); idx++) {
                 fastcmd cmd(7, "wrecord");
-                cmd << con.witnessBufferIndex[index] << hashIndex << (uint64_t)keyHash
+                cmd << con.witnessBufferIndex[idx] << hashIndex << (uint64_t)keyHash
                         << clientId << lastRequestId;
                 cmd.append(request.data(), request.size());
                 TimeTrace::record("Constructed witness record request string.");
-                send_(socket, cmd.data(), cmd.size());
+                udpWrite(con.witnessSockets.at(idx), SRC_ADDR, con.witnessIps.at(idx).c_str(),
+                         WITNESS_PORT, WITNESS_PORT, request.data(), false);
+                //send_(socket, cmd.data(), cmd.size());
                 TimeTrace::record("Sent to witness");
-                ++index;
             }
         }
 
@@ -1599,13 +1599,13 @@ namespace redis {
                 recv_multi_bulk_reply_(socket, sv);
             } catch (key_error & e) {
                 assert(timeout_seconds > 0);
-                return missing_value(); // should we throw a timeout_error?
+                return make_pair("", missing_value()); // should we throw a timeout_error?
                 // we set a timeout so we expect that this can happen
             }
             if (sv.size() == 2)
                 return make_pair(sv[0], sv[1]);
             else
-                return make_pair("", missing_value);
+                return make_pair("", missing_value());
         }
 
         string_type brpop(const string_type & key, int_type timeout_seconds) {
