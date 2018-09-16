@@ -56,6 +56,7 @@
 #include <boost/optional.hpp>
 #include <boost/variant.hpp>
 
+#include "util.h"
 #include "anet.h"
 #include "udp.h"
 #include "UnsyncedRpcTracker.h"
@@ -77,7 +78,7 @@
 #define REDIS_PREFIX_INT_REPLY          ':'
 #define REDIS_WHITESPACE                " \f\n\r\t\v"
 
-#define SRC_ADDR "192.168.1.1"
+#define SRC_ADDR "10.10.10.104"
 #define WITNESS_PORT 1111
 
 typedef unsigned long ulong;
@@ -296,6 +297,72 @@ namespace redis {
         boost::optional<std::string> key_name_;
     };
 
+
+    class witnesscmd {
+    public:
+        /*
+         * Create packets for witness cmds.
+         * Protocol definition.
+         * 'A': Add
+         * 'G': Get All
+         * 'D': Delete All
+         */
+        explicit witnesscmd(const char* protocol, const char* key, const char * value,
+                            const unsigned int keySize, const unsigned int valueSize) {
+            strbuf = inlineBuf;
+            char* buf = strbuf;
+            strbuf[0] = *protocol;
+            //memcpy(buf, protocol, 1);
+            buf += 1;
+
+            // TODO: keysize is static at 30 Bytes currently
+            assert(keySize == 30);
+            itoa_custom(keySize, buf, 10);
+            buf += strlen(buf);
+            memcpy(buf, key, keySize);
+            buf += keySize;
+
+            // TODO: value is capped at 1000 Bytes currently
+            assert(valueSize < 1000);
+            itoa_custom(valueSize, buf, 10);
+            buf += strlen(buf);
+            memcpy(buf, value, valueSize);
+            buf += valueSize;
+
+            // Adding a dollar to mark the end
+            memcpy(buf, dollar, 1);
+            buf += 1;
+            //appended = 2 + keySize + valueSize + (2 * sizeof(unsigned int));
+            appended = 2 + keySize + valueSize;
+        }
+
+        ~witnesscmd() {
+            destroy();
+        }
+
+        char* c_str() {
+            strbuf[appended - 1] = 0;
+            return strbuf;
+        }
+
+        int size() {
+            return appended - 1; // Don't count tailing '$'.
+        }
+        char* data() {
+            return strbuf;
+        }
+
+    private:
+        void destroy() {
+            if (strbuf != inlineBuf) delete[] strbuf;
+        }
+        char* strbuf;
+        int appended = 0;
+        char inlineBuf[1032];
+        const static int inlineBufSize = 1032;
+        static constexpr const char* dollar = "$";
+    };
+
     class fastcmd {
     public:
 
@@ -305,12 +372,12 @@ namespace redis {
             strbuf[0] = '*';
             appended = 1;
             char* buf = strbuf + appended;
-            itoa(argc, buf, 10);
+            itoa_custom(argc, buf, 10);
             buf += strlen(buf);
             memcpy(buf, newlineDollar, 3);
             buf += 3;
 
-            itoa(cmd_name.length(), buf, 10);
+            itoa_custom(cmd_name.length(), buf, 10);
             buf += strlen(buf);
             memcpy(buf, newline, 2);
             buf += 2;
@@ -329,7 +396,7 @@ namespace redis {
             ensureSpace(size + 15);
             char* buf = strbuf + appended;
 
-            itoa(size, buf, 10);
+            itoa_custom(size, buf, 10);
             buf += strlen(buf);
             memcpy(buf, newline, 2);
             buf += 2;
@@ -346,7 +413,7 @@ namespace redis {
             ensureSpace(value.length() + 15);
             char* buf = strbuf + appended;
 
-            itoa(value.length(), buf, 10);
+            itoa_custom(value.length(), buf, 10);
             buf += strlen(buf);
             memcpy(buf, newline, 2);
             buf += 2;
@@ -369,14 +436,14 @@ namespace redis {
                 buf += 3; // 1 for int value, 2 for \r\n
             }
 
-            ulltoa64(buf, 30 - 4, datum);
+            ulltoa64_custom(buf, 30 - 4, datum);
 //            ulltoa(datum, buf, 10);
             int datumLen = strlen(buf);
             buf += datumLen;
             memcpy(buf, newlineDollar, 3);
             buf += 3;
 
-            itoa(datumLen, bufPosForIntLen, 10);
+            itoa_custom(datumLen, bufPosForIntLen, 10);
             bufPosForIntLen += strlen(bufPosForIntLen);
             memcpy(bufPosForIntLen, newline, 2);
 
@@ -398,13 +465,13 @@ namespace redis {
                 buf += 3; // 1 for int value, 2 for \r\n
             }
 
-            itoa(datum, buf, 10);
+            itoa_custom(datum, buf, 10);
             int datumLen = strlen(buf);
             buf += datumLen;
             memcpy(buf, newlineDollar, 3);
             buf += 3;
 
-            itoa(datumLen, bufPosForIntLen, 10);
+            itoa_custom(datumLen, bufPosForIntLen, 10);
             bufPosForIntLen += strlen(bufPosForIntLen);
             memcpy(bufPosForIntLen, newline, 2);
 
@@ -440,97 +507,6 @@ namespace redis {
             }
         }
 
-        /**
-        * C++ version 0.4 char* style "itoa":
-        * Written by Lukás Chmela
-        * Released under GPLv3.
-        */
-        char* itoa(int value, char* result, int base) {
-           // check that the base if valid
-           if (base < 2 || base > 36) {
-               *result = '\0';
-               return result;
-           }
-
-           char* ptr = result, *ptr1 = result, tmp_char;
-           int tmp_value;
-
-           do {
-               tmp_value = value;
-               value /= base;
-               *ptr++ = "zyxwvutsrqponmlkjihgfedcba9876543210123456789abcdefghijklmnopqrstuvwxyz" [35 + (tmp_value - value * base)];
-           } while (value);
-
-           // Apply negative sign
-           if (tmp_value < 0) *ptr++ = '-';
-           *ptr-- = '\0';
-           while (ptr1 < ptr) {
-               tmp_char = *ptr;
-               *ptr-- = *ptr1;
-               *ptr1++ = tmp_char;
-           }
-           return result;
-        }
-
-        /**
-        * Modified version of C++ version 0.4 char* style "itoa":
-        * Takes 64-bit integer instead.
-        * Written by Lukás Chmela
-        * Released under GPLv3.
-        */
-        char* ulltoa(uint64_t value, char* result, int base) {
-           // check that the base if valid
-           if (base < 2 || base > 36) {
-               *result = '\0';
-               return result;
-           }
-
-           char* ptr = result, *ptr1 = result, tmp_char;
-           uint64_t tmp_value;
-
-           do {
-               tmp_value = value;
-               value /= base;
-               *ptr++ = "zyxwvutsrqponmlkjihgfedcba9876543210123456789abcdefghijklmnopqrstuvwxyz" [35 + (tmp_value - value * base)];
-           } while (value);
-
-           // Apply negative sign
-//           if (tmp_value < 0) *ptr++ = '-';
-           *ptr-- = '\0';
-           while (ptr1 < ptr) {
-               tmp_char = *ptr;
-               *ptr-- = *ptr1;
-               *ptr1++ = tmp_char;
-           }
-           return result;
-        }
-
-        /**
-         * Encode unsigned 64-bit integer with 64-base ASCII encoding.
-         */
-        int ulltoa64(char* dst, size_t dstlen, long long svalue) {
-            char* ptr = dst, *ptr1 = dst, tmp_char;
-            uint64_t tmp_value;
-            size_t plen = 0;
-
-            do {
-                if (plen >= dstlen) {
-                    return 0; // Error. Not enough space.
-                }
-                tmp_value = svalue & 63;
-                svalue >>= 6;
-                *ptr++ = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=" [tmp_value];
-                plen++;
-            } while (svalue);
-
-            *ptr-- = '\0';
-            while (ptr1 < ptr) {
-                tmp_char = *ptr;
-                *ptr-- = *ptr1;
-                *ptr1++ = tmp_char;
-            }
-            return (int)plen;
-        }
 
         char* strbuf;
         int bufSize;
@@ -1072,22 +1048,18 @@ namespace redis {
         void sendWitnessRecord(const std::string& key, fastcmd& request) {
             connection_data con = get_conn(key);
 
-            uint32_t keyHash;
-            MurmurHash3_x86_32(key.data(), key.size(), con.dbindex, &keyHash);
-            int hashIndex = keyHash & 1023;
-//            fprintf(stderr, "dbindex: %d, hashIndex: %d clientId: %lld, requestId: %lld\n",
-//                    con.dbindex, hashIndex, clientId, lastRequestId);
-
+//          uint32_t keyHash;
+//          MurmurHash3_x86_32(key.data(), key.size(), con.dbindex, &keyHash);
+//          int hashIndex = keyHash & 1023;
+//          fprintf(stderr, "dbindex: %d, hashIndex: %d clientId: %lld, requestId: %lld\n",
+//                  con.dbindex, hashIndex, clientId, lastRequestId);
             for (unsigned long idx = 0; idx < con.witnessSockets.size(); idx++) {
-                fastcmd cmd(7, "wrecord");
-                cmd << con.witnessBufferIndex[idx] << hashIndex << (uint64_t)keyHash
-                        << clientId << lastRequestId;
-                cmd.append(request.data(), request.size());
+                witnesscmd cmd("A", key.data(), request.data(), key.size(), request.size()); 
                 TimeTrace::record("Constructed witness record request string.");
+                //fprintf(stderr, "data: %s\ncstr: %s\nrequest: %s\n", cmd.data(), cmd.c_str(), request.data());
                 udpWrite(con.witnessSockets.at(idx), SRC_ADDR, con.witnessIps.at(idx).c_str(),
-                         WITNESS_PORT, WITNESS_PORT, request.data(), false);
-                //send_(socket, cmd.data(), cmd.size());
-                TimeTrace::record("Sent to witness");
+                         WITNESS_PORT, WITNESS_PORT, cmd.data(), false);
+               TimeTrace::record("Sent to witness");
             }
         }
 
@@ -1142,18 +1114,24 @@ namespace redis {
                     TimeTrace::record("found socket.");
                     send_(socket, request.data(), request.size());
                     TimeTrace::record("Sent to master.");
-                    sendWitnessRecord(key, request);
+                    // Temporary hack to remove overhead of CGAR-W from CGAR-C benchmark.
+                    if (connections_[0].witnessIps.size() > 0) { // If using witness..
+                        sendWitnessRecord(key, request);
+                    }
 
                     bool shouldSync = false;
-                    if (!receiveWitnessReplay(key)) {
-                        shouldSync = true;
-                    }
-                    TimeTrace::record("Received reply from all witness.");
 
-                    uint64_t opNumInServer, syncNum;
-                    if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
-                        tracker.registerUnsynced(socket, get_conn(key).dbindex, request.data(), request.size(), opNumInServer, syncNum);
-                        TimeTrace::record("Registered unsynced.");
+                    // uint64_t opNumInServer=0, syncNum=0;
+                    if (recv_single_line_reply_(socket) == REDIS_STATUS_REPLY_OK) {
+//Disable CGAR-C        if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
+//Disable CGAR-C            tracker.registerUnsynced(socket, get_conn(key).dbindex, request.data(), request.size(), opNumInServer, syncNum);
+//                        TimeTrace::record("Registered unsynced.");
+                        /* TODO add reply
+                        if (!receiveWitnessReplay(key)) {
+                            shouldSync = true;
+                        }
+                        */
+                        TimeTrace::record("Received reply from all witness.");
                         if (shouldSync) {
                             // TODO: send sync rpc?? well...
 //                            get(key); // hack to avoid implementing new rpc..
@@ -1192,11 +1170,14 @@ namespace redis {
                     send_(socket, request.data(), request.size());
                     sendWitnessRecord(key, request);
                     bool shouldSync = false;
+                    /* TODO: implement reply
                     if (!receiveWitnessReplay(key)) {
                         shouldSync = true;
                     }
-                    int64_t value;
-                    uint64_t opNumInServer, syncNum;
+                    */
+                    //fprintf(stderr, "Sent Witness stuff\n");
+                    int64_t value=0;
+                    uint64_t opNumInServer=0, syncNum=0;
                     if (recv_unsynced_int_reply_(socket, &value, &opNumInServer, &syncNum)) {
                         tracker.registerUnsynced(socket, get_conn(key).dbindex, request.data(), request.size(), opNumInServer, syncNum);
                         if (shouldSync) {
@@ -3462,3 +3443,4 @@ std::basic_istream<ch, char_traits>& operator>>(std::basic_istream<ch, char_trai
 }
 
 #endif // REDISCLIENT_H
+

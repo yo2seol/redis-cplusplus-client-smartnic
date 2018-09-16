@@ -109,7 +109,5 @@ int udpWrite(int s, const char* saddr, const char* daddr, short sport, short dpo
         perror("sendto failed");
         return 1;
     }
-
-    printf ("Packet Send. Length : %d \n" , iph->ip_len);
     return 0;
 }

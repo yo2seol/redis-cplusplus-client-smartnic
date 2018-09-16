@@ -2,16 +2,17 @@
 
 VPATH = tests
 
-CFLAGS?= -std=c++11 -pedantic -O3 -Wall -DNEBUG -W -Wno-deprecated-register -Wno-unused-parameter
+CFLAGS?= -std=c++11 -pedantic -O3 -Wall -DNEBUG -W -Wno-unused-parameter
 #CFLAGS?= -std=c++11 -pedantic -O3 -W -DDEBUG -g
 CC = g++
 
-CLIENTOBJS = anet.o udp.o
+CLIENTOBJS = anet.o util.o udp.o
 LIBNAME = libredisclient.a
 
 #TESTAPP = test_client
 TESTAPP = redis_benchmark
-TESTAPPOBJS = Cycles.o redis_benchmark.o UnsyncedRpcTracker.o MurmurHash3.o TimeTrace.o test_lists.o test_sets.o test_zsets.o test_hashes.o test_cluster.o test_distributed_strings.o test_distributed_ints.o test_distributed_mutexes.o test_generic.o benchmark.o functions.o
+#TESTAPPOBJS = Cycles.o redis_benchmark.o UnsyncedRpcTracker.o MurmurHash3.o TimeTrace.o test_lists.o test_sets.o test_zsets.o test_hashes.o test_cluster.o test_distributed_strings.o test_distributed_ints.o test_distributed_mutexes.o test_generic.o benchmark.o functions.o
+TESTAPPOBJS = Cycles.o redis_benchmark.o UnsyncedRpcTracker.o MurmurHash3.o TimeTrace.o functions.o
 TESTAPPLIBS = $(LIBNAME) -lstdc++ -lboost_system -lboost_thread -lpthread
 
 all: $(LIBNAME) $(TESTAPP)
@@ -49,6 +50,7 @@ log:
 	git log '--pretty=format:%ad %s' --date=short > Changelog
 
 anet.o:                     anet.c fmacros.h anet.h
+util.o:						util.c util.h
 udp.o:						udp.c udp.h
 redis_benchmark.o:	    redisclient.h redis_benchmark.cpp Cycles.h UnsyncedRpcTracker.h MurmurHash3.h
 TimeTrace.o:		    TimeTrace.h Atomic.h
