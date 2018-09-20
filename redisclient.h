@@ -735,8 +735,11 @@ namespace redis {
         ~base_client() {
 
             BOOST_FOREACH(connection_data & con, connections_) {
-                if (con.socket != ANET_ERR)
-                    close(con.socket);
+                // Close all sockets;
+                if (con.socket != ANET_ERR) close(con.socket);
+                for (int s : con.witnessSockets) {
+                    close(s);
+                }
             }
         }
 
