@@ -56,12 +56,18 @@
 #include <boost/optional.hpp>
 #include <boost/variant.hpp>
 
+
 #include "util.h"
 #include "anet.h"
 #include "udp.h"
 #include "UnsyncedRpcTracker.h"
 #include "MurmurHash3.h"
 #include "TimeTrace.h"
+
+extern "C"
+{
+    #include "witnesscmd.h"
+}
 
 #define REDIS_LBR                       "\r\n"
 #define REDIS_STATUS_REPLY_OK           "OK"
@@ -295,72 +301,6 @@ namespace redis {
 
         std::vector<std::string> lines_;
         boost::optional<std::string> key_name_;
-    };
-
-
-    class witnesscmd {
-    public:
-        /*
-         * Create packets for witness cmds.
-         * Protocol definition.
-         * 'A': Add
-         * 'G': Get All
-         * 'D': Delete All
-         */
-        explicit witnesscmd(const char* protocol, const char* key, const char * value,
-                            const unsigned int keySize, const unsigned int valueSize) {
-            strbuf = inlineBuf;
-            char* buf = strbuf;
-            strbuf[0] = *protocol;
-            //memcpy(buf, protocol, 1);
-            buf += 1;
-
-            // TODO: keysize is static at 30 Bytes currently
-            assert(keySize == 30);
-            itoa_custom(keySize, buf, 10);
-            buf += strlen(buf);
-            memcpy(buf, key, keySize);
-            buf += keySize;
-
-            // TODO: value is capped at 1000 Bytes currently
-            assert(valueSize < 1000);
-            itoa_custom(valueSize, buf, 10);
-            buf += strlen(buf);
-            memcpy(buf, value, valueSize);
-            buf += valueSize;
-
-            // Adding a dollar to mark the end
-            memcpy(buf, dollar, 1);
-            buf += 1;
-            //appended = 2 + keySize + valueSize + (2 * sizeof(unsigned int));
-            appended = 2 + keySize + valueSize;
-        }
-
-        ~witnesscmd() {
-            destroy();
-        }
-
-        char* c_str() {
-            strbuf[appended - 1] = 0;
-            return strbuf;
-        }
-
-        int size() {
-            return appended - 1; // Don't count tailing '$'.
-        }
-        char* data() {
-            return strbuf;
-        }
-
-    private:
-        void destroy() {
-            if (strbuf != inlineBuf) delete[] strbuf;
-        }
-        char* strbuf;
-        int appended = 0;
-        char inlineBuf[1032];
-        const static int inlineBufSize = 1032;
-        static constexpr const char* dollar = "$";
     };
 
     class fastcmd {
@@ -1050,19 +990,20 @@ namespace redis {
 
         void sendWitnessRecord(const std::string& key, fastcmd& request) {
             connection_data con = get_conn(key);
-
-//          uint32_t keyHash;
-//          MurmurHash3_x86_32(key.data(), key.size(), con.dbindex, &keyHash);
-//          int hashIndex = keyHash & 1023;
+            uint32_t keyHash;
+            MurmurHash3_x86_32(key.data(), key.size(), con.dbindex, &keyHash);
+            int hashIndex = keyHash & 1023;
 //          fprintf(stderr, "dbindex: %d, hashIndex: %d clientId: %lld, requestId: %lld\n",
 //                  con.dbindex, hashIndex, clientId, lastRequestId);
             for (unsigned long idx = 0; idx < con.witnessSockets.size(); idx++) {
-                witnesscmd cmd("A", key.data(), request.data(), key.size(), request.size()); 
+                witnesscmd_t cmd;
+                init_witnesscmd(&cmd, "A", clientId, lastRequestId,
+                    hashIndex, request.data(), request.size()); 
                 TimeTrace::record("Constructed witness record request string.");
                 //fprintf(stderr, "data: %s\ncstr: %s\nrequest: %s\n", cmd.data(), cmd.c_str(), request.data());
                 udpWrite(con.witnessSockets.at(idx), SRC_ADDR, con.witnessIps.at(idx).c_str(),
-                         WITNESS_PORT, WITNESS_PORT, cmd.data(), false);
-               TimeTrace::record("Sent to witness");
+                         WITNESS_PORT, WITNESS_PORT, witness_data(&cmd), false);
+                TimeTrace::record("Sent to witness");
             }
         }
 

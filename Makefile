@@ -2,7 +2,7 @@
 
 VPATH = tests
 
-CFLAGS?= -std=c++11 -pedantic -O3 -Wall -DNEBUG -W -Wno-unused-parameter
+CFLAGS?= -std=c++11 -pedantic -O3 -Wall -DNEBUG -W -Wno-unused-parameter -I/home/p4/Desktop/witnesscmd -L/home/p4/Desktop/witnesscmd -lwitnesscmd
 #CFLAGS?= -std=c++11 -pedantic -O3 -W -DDEBUG -g
 CC = g++
 
@@ -13,7 +13,7 @@ LIBNAME = libredisclient.a
 TESTAPP = redis_benchmark
 #TESTAPPOBJS = Cycles.o redis_benchmark.o UnsyncedRpcTracker.o MurmurHash3.o TimeTrace.o test_lists.o test_sets.o test_zsets.o test_hashes.o test_cluster.o test_distributed_strings.o test_distributed_ints.o test_distributed_mutexes.o test_generic.o benchmark.o functions.o
 TESTAPPOBJS = Cycles.o redis_benchmark.o UnsyncedRpcTracker.o MurmurHash3.o TimeTrace.o functions.o
-TESTAPPLIBS = $(LIBNAME) -lstdc++ -lboost_system -lboost_thread -lpthread
+TESTAPPLIBS = $(LIBNAME) -lstdc++ -lboost_system -lboost_thread -lpthread -lwitnesscmd
 
 all: $(LIBNAME) $(TESTAPP)
 
@@ -30,7 +30,7 @@ $(LIBNAME): $(CLIENTOBJS)
 	$(CC) -c $(CFLAGS) $<
 
 $(TESTAPP): $(LIBNAME) $(TESTAPPOBJS)
-	$(CC) -o $(TESTAPP) $(TESTAPPOBJS) $(TESTAPPLIBS)
+	$(CC) -o $(TESTAPP) $(TESTAPPOBJS) $(TESTAPPLIBS) -I/home/p4/Desktop/witnesscmd -L/home/p4/Desktop/witnesscmd
 
 test: $(TESTAPP)
 	@./test_client
