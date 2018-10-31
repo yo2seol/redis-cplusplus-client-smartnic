@@ -997,7 +997,7 @@ namespace redis {
 //                  con.dbindex, hashIndex, clientId, lastRequestId);
             for (unsigned long idx = 0; idx < con.witnessSockets.size(); idx++) {
                 witnesscmd_t cmd;
-                init_witnesscmd(&cmd, "A", clientId, lastRequestId,
+                create_add_wcmd(&cmd, clientId, lastRequestId,
                     hashIndex, request.data(), request.size()); 
                 TimeTrace::record("Constructed witness record request string.");
                 //fprintf(stderr, "data: %s\ncstr: %s\nrequest: %s\n", cmd.data(), cmd.c_str(), request.data());
