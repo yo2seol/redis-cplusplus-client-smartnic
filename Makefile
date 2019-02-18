@@ -2,7 +2,7 @@
 
 VPATH = tests
 
-CFLAGS?= -std=c++11 -pedantic -O3 -Wall -DNEBUG -W -Wno-unused-parameter -I/home/p4/Desktop/witnesscmd -L/home/p4/Desktop/witnesscmd -lwitnesscmd
+CFLAGS?= -std=c++11 -pedantic -O3 -Wall -DNEBUG -W -Wno-unused-parameter -I../witnesscmd -L../witnesscmd -lwitnesscmd
 #CFLAGS?= -std=c++11 -pedantic -O3 -W -DDEBUG -g
 CC = g++
 
@@ -30,7 +30,7 @@ $(LIBNAME): $(CLIENTOBJS)
 	$(CC) -c $(CFLAGS) $<
 
 $(TESTAPP): $(LIBNAME) $(TESTAPPOBJS)
-	$(CC) -o $(TESTAPP) $(TESTAPPOBJS) $(TESTAPPLIBS) -I/home/p4/Desktop/witnesscmd -L/home/p4/Desktop/witnesscmd
+	$(CC) -o $(TESTAPP) $(TESTAPPOBJS) $(TESTAPPLIBS) -I../witnesscmd -L../witnesscmd
 
 test: $(TESTAPP)
 	@./test_client
