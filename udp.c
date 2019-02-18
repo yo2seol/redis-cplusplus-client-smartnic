@@ -42,7 +42,7 @@ unsigned short csum(unsigned short *ptr,int nbytes) {
 }
 
 int udpWrite(int s, const char* saddr, const char* daddr, short sport, short dport,
-             char* buf, bool chksum)
+             char* buf, int len, bool chksum)
 { 
     // Datagram to represent the packet
     char datagram[4096] , source_ip[32] , *data , *pseudogram;
@@ -58,8 +58,7 @@ int udpWrite(int s, const char* saddr, const char* daddr, short sport, short dpo
 
     // Copy data into datagram
     data = datagram + sizeof(struct ip) + sizeof(struct udphdr);
-    strcpy(data , buf);
-
+    memcpy(data , buf, len);
 
     strcpy(source_ip , saddr);
     sin.sin_family = AF_INET;
@@ -70,7 +69,7 @@ int udpWrite(int s, const char* saddr, const char* daddr, short sport, short dpo
     iph->ip_hl = 5;
     iph->ip_v = 4;
     iph->ip_tos = 0;
-    iph->ip_len = sizeof (struct ip) + sizeof (struct udphdr) + strlen(data);
+    iph->ip_len = sizeof (struct ip) + sizeof (struct udphdr) + len;
     iph->ip_id = htons(10); //Id of this packet
     iph->ip_off = 0;
     iph->ip_ttl = 255;
@@ -85,7 +84,7 @@ int udpWrite(int s, const char* saddr, const char* daddr, short sport, short dpo
     //UDP header
     udph->uh_sport = htons(sport);
     udph->uh_dport = htons(dport);
-    udph->uh_ulen = htons(8 + strlen(data)); //tcp header size
+    udph->uh_ulen = htons(8 + len); //udp header size
     udph->uh_sum = 0; //leave checksum 0 now, filled later by pseudo header
 
     //Now the UDP checksum using the pseudo header
@@ -94,14 +93,15 @@ int udpWrite(int s, const char* saddr, const char* daddr, short sport, short dpo
         psh.dest_address = sin.sin_addr.s_addr;
         psh.placeholder = 0;
         psh.protocol = IPPROTO_UDP;
-        psh.udp_length = htons(sizeof(struct udphdr) + strlen(data) );
+        psh.udp_length = htons(sizeof(struct udphdr) + len);
         
-        int psize = sizeof(struct pseudo_header) + sizeof(struct udphdr) + strlen(data);
+        int psize = sizeof(struct pseudo_header) + sizeof(struct udphdr) + len;
         pseudogram = (char *) malloc(psize);
         
         memcpy(pseudogram , (char*) &psh , sizeof (struct pseudo_header));
-        memcpy(pseudogram + sizeof(struct pseudo_header) , udph , sizeof(struct udphdr) + strlen(data));
+        memcpy(pseudogram + sizeof(struct pseudo_header) , udph , sizeof(struct udphdr) + len);
         udph->uh_sum = csum( (unsigned short*) pseudogram , psize);
+        free(pseudogram);
     }
 
     //Send the packet

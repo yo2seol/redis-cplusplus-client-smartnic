@@ -84,7 +84,8 @@ extern "C"
 #define REDIS_PREFIX_INT_REPLY          ':'
 #define REDIS_WHITESPACE                " \f\n\r\t\v"
 
-#define SRC_ADDR "10.10.10.104"
+#define SRC_ADDR "10.10.105.101"
+#define WITNESS_CLIENT_PORT 2222
 #define WITNESS_PORT 1111
 
 typedef unsigned long ulong;
@@ -1000,9 +1001,10 @@ namespace redis {
                 create_add_wcmd(&cmd, clientId, lastRequestId,
                     hashIndex, request.data(), request.size()); 
                 TimeTrace::record("Constructed witness record request string.");
-                //fprintf(stderr, "data: %s\ncstr: %s\nrequest: %s\n", cmd.data(), cmd.c_str(), request.data());
+                //fprintf(stderr, "data: %s\ncstr: %s\nrequest: %s\n", witness_data(&cmd), witness_c_str(&cmd), request.data());
+                //fprintf(stderr, "size: %lu vs. %d vs %d\n", strlen(witness_data(&cmd)), witness_size(&cmd), request.size());
                 udpWrite(con.witnessSockets.at(idx), SRC_ADDR, con.witnessIps.at(idx).c_str(),
-                         WITNESS_PORT, WITNESS_PORT, witness_data(&cmd), false);
+                         WITNESS_CLIENT_PORT, WITNESS_PORT, witness_data(&cmd), witness_size(&cmd), false);
                 TimeTrace::record("Sent to witness");
             }
         }
@@ -1025,7 +1027,7 @@ namespace redis {
             }
         }
 
-        bool receiveWitnessReplay(const std::string& key) {
+        bool receiveWitnessReply(const std::string& key) {
             connection_data con = get_conn(key);
 
             if (con.witnessSockets.size() < con.witnessIps.size()) {
@@ -1071,7 +1073,7 @@ namespace redis {
 //Disable CGAR-C            tracker.registerUnsynced(socket, get_conn(key).dbindex, request.data(), request.size(), opNumInServer, syncNum);
 //                        TimeTrace::record("Registered unsynced.");
                         /* TODO add reply
-                        if (!receiveWitnessReplay(key)) {
+                        if (!receiveWitnessReply(key)) {
                             shouldSync = true;
                         }
                         */
@@ -1115,7 +1117,7 @@ namespace redis {
                     sendWitnessRecord(key, request);
                     bool shouldSync = false;
                     /* TODO: implement reply
-                    if (!receiveWitnessReplay(key)) {
+                    if (!receiveWitnessReply(key)) {
                         shouldSync = true;
                     }
                     */
@@ -2382,10 +2384,11 @@ namespace redis {
                 throw retry_error();
             }
 
-
             if (line[0] != REDIS_PREFIX_STATUS_REPLY_VALUE &&
-                    line[0] != REDIS_PREFIX_STATUS_REPLY_UNSYNCED)
+                    line[0] != REDIS_PREFIX_STATUS_REPLY_UNSYNCED) {
+                std::cout << line << "\n";
                 throw protocol_error("unexpected prefix for status reply");
+            }
 
             return line.substr(1);
         }
