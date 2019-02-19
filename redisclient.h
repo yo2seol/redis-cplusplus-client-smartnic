@@ -587,7 +587,7 @@ namespace redis {
                 con.witnessSockets.push_back(s);
                 struct sockaddr_in sin;
                 sin.sin_family = AF_INET;
-                sin.sin_port = htons(1111);
+                sin.sin_port = htons(WITNESS_PORT);
                 sin.sin_addr.s_addr = inet_addr(witnessIp.c_str());
                 con.witnessSockAddrs.push_back(sin);
             }

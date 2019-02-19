@@ -3,8 +3,6 @@
 struct ip iph_g;
 
 int createSocket() {
-    //Create a raw socket of type IPPROTO
-    //int s = socket (AF_INET, SOCK_RAW, IPPROTO_RAW);
     int s = socket (AF_INET, SOCK_DGRAM, 0);
     if(s == -1)
     {
@@ -84,7 +82,7 @@ int udpWrite(int s, const char* saddr, const char* daddr, short sport, short dpo
     //Now the UDP checksum using the pseudo header
     if (chksum) {
         psh.source_address = inet_addr(saddr);
-        psh.dest_address = inet_addr(daddr);
+        psh.dest_address = sin->sin_addr.s_addr;
         psh.placeholder = 0;
         psh.protocol = IPPROTO_UDP;
         psh.udp_length = htons(sizeof(struct udphdr) + len);

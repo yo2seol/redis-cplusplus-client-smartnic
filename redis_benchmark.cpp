@@ -56,7 +56,7 @@ struct random_data
 // Globals.
 const char* hostIp = "10.10.101.101";
 //const char* hostIp = "rcmaster";
-const char* witnessIps[] = {"10.10.101.101"};
+const char* witnessIps[] = {"10.10.102.101", "10.10.103.101", "10.10.104.101"};
 //const char* witnessIps[] = {"rc01", "rc02"};
 //const char* witnessIps[] = {"10.10.10.166", "10.10.10.167"};
 int objectSize = 100;   // Number of bytes for value payload.
