@@ -134,6 +134,7 @@ namespace redis {
     private:
         int socket;
         std::vector<int> witnessSockets;
+        std::vector<sockaddr_in> witnessSockAddrs;
 
         template<typename CONSISTENT_HASHER>
         friend class base_client;
@@ -584,6 +585,11 @@ namespace redis {
             for (std::string witnessIp : con.witnessIps) {
                 int s = createSocket();
                 con.witnessSockets.push_back(s);
+                struct sockaddr_in sin;
+                sin.sin_family = AF_INET;
+                sin.sin_port = htons(1111);
+                sin.sin_addr.s_addr = inet_addr(witnessIp.c_str());
+                con.witnessSockAddrs.push_back(sin);
             }
         }
 
@@ -1001,10 +1007,15 @@ namespace redis {
                 create_add_wcmd(&cmd, clientId, lastRequestId,
                     hashIndex, request.data(), request.size()); 
                 TimeTrace::record("Constructed witness record request string.");
-                //fprintf(stderr, "data: %s\ncstr: %s\nrequest: %s\n", witness_data(&cmd), witness_c_str(&cmd), request.data());
+                //fprintf(stderr, "data: %x\nrequest: %s\n", witness_data(&cmd)[0], request.data());
                 //fprintf(stderr, "size: %lu vs. %d vs %d\n", strlen(witness_data(&cmd)), witness_size(&cmd), request.size());
-                udpWrite(con.witnessSockets.at(idx), SRC_ADDR, con.witnessIps.at(idx).c_str(),
-                         WITNESS_CLIENT_PORT, WITNESS_PORT, witness_data(&cmd), witness_size(&cmd), false);
+                udpWrite(con.witnessSockets.at(idx),
+                         SRC_ADDR,
+                         con.witnessIps.at(idx).c_str(),
+                         WITNESS_CLIENT_PORT, WITNESS_PORT, witness_data(&cmd),
+                         witness_size(&cmd),
+                         &con.witnessSockAddrs.at(idx),
+                         false);
                 TimeTrace::record("Sent to witness");
             }
         }
@@ -1014,17 +1025,14 @@ namespace redis {
          * \return
          *      returns true if accepted. false if rejected.
          */
-        bool recv_witness_reply_(int socket) {
-            std::string reply = recv_single_line_reply_(socket);
+        bool recv_witness_reply_(int socket, sockaddr_in sin) {
+            uint blen;
+            char buffer;
+            recvfrom(socket, &buffer, 1,
+                     MSG_WAITALL, (struct sockaddr *) &sin,
+                     &blen);
             TimeTrace::record("Received reply from a witness.");
-            std::string content = reply.substr(0,6);
-            if (content == REDIS_STATUS_REPLY_REJECT) {
-                return false;
-            } else if (content == REDIS_STATUS_REPLY_ACCEPT) {
-                return true;
-            } else {
-                throw protocol_error("Reply format for witness record request doesn't match.");
-            }
+            return buffer == 0;
         }
 
         bool receiveWitnessReply(const std::string& key) {
@@ -1035,8 +1043,9 @@ namespace redis {
             }
 
             bool accepted = true;
-            for (int socket : con.witnessSockets) {
-                if (!recv_witness_reply_(socket)) {
+
+            for (unsigned long idx = 0; idx < con.witnessSockets.size(); idx++) {
+                if (!recv_witness_reply_(con.witnessSockets.at(idx), con.witnessSockAddrs.at(idx))) {
 //                    fprintf(stderr, "witness rejected! key: %s, socket: %d",
 //                            key.c_str(), socket);
                     accepted = false;
@@ -1072,11 +1081,10 @@ namespace redis {
 //Disable CGAR-C        if (recv_unsynced_ok_reply_(socket, &opNumInServer, &syncNum)) {
 //Disable CGAR-C            tracker.registerUnsynced(socket, get_conn(key).dbindex, request.data(), request.size(), opNumInServer, syncNum);
 //                        TimeTrace::record("Registered unsynced.");
-                        /* TODO add reply
                         if (!receiveWitnessReply(key)) {
-                            shouldSync = true;
+                            //TODO
+                            //shouldSync = true;
                         }
-                        */
                         TimeTrace::record("Received reply from all witness.");
                         if (shouldSync) {
                             // TODO: send sync rpc?? well...
@@ -1116,11 +1124,10 @@ namespace redis {
                     send_(socket, request.data(), request.size());
                     sendWitnessRecord(key, request);
                     bool shouldSync = false;
-                    /* TODO: implement reply
                     if (!receiveWitnessReply(key)) {
-                        shouldSync = true;
+                        //TODO
+                        //shouldSync = true;
                     }
-                    */
                     //fprintf(stderr, "Sent Witness stuff\n");
                     int64_t value=0;
                     uint64_t opNumInServer=0, syncNum=0;

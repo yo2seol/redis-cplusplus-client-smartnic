@@ -8,6 +8,8 @@
 #include <errno.h> //For errno - the error number
 #include <stdbool.h>
 #include <arpa/inet.h>
+#include <netinet/udp.h>   //Provides declarations for udp header
+#include <netinet/ip.h>    //Provides declarations for ip header
 
 #ifndef UDP_H
 #define UDP_H
@@ -23,9 +25,11 @@ struct pseudo_header
     u_int16_t udp_length;
 };
 
+extern struct ip iph_g;
+
 unsigned short csum(unsigned short *ptr, int nbytes);
 
 int createSocket();
 int udpWrite(int s, const char* saddr, const char* daddr, short sport, short dport,
-             char* buf, int len,  bool chksum);
+             char* buf, int len, struct sockaddr_in *sin, bool chksum);
 #endif
