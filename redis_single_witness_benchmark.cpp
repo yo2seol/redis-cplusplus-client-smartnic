@@ -34,40 +34,24 @@
 #include <cinttypes>
 #include <typeinfo>
 
-#include "redisclient.h"
+#include "rediswitnessclient.h"
 #include "Cycles.h"
 #include <iostream>
 #include <atomic>
 using RAMCloud::Cycles;
 
-#ifdef __APPLE__
-struct random_data
-  {
-    int32_t *fptr;		/* Front pointer.  */
-    int32_t *rptr;		/* Rear pointer.  */
-    int32_t *state;		/* Array of state values.  */
-    int rand_type;		/* Type of random number generator.  */
-    int rand_deg;		/* Degree of random number generator.  */
-    int rand_sep;		/* Distance between front and rear.  */
-    int32_t *end_ptr;		/* Pointer behind state table.  */
-  };
-#endif
-
 // Globals.
-const char* hostIp = "10.10.101.101";
-//const char* hostIp = "rcmaster";
-const char* witnessIps[] = {"10.10.102.101", "10.10.103.101", "10.10.104.101"};
-//const char* witnessIps[] = {"rc01", "rc02"};
-//const char* witnessIps[] = {"10.10.10.166", "10.10.10.167"};
+const char* hostIp = "10.10.102.101";
 int objectSize = 100;   // Number of bytes for value payload.
 int count = 1000000;    // How many repeat
 int clientIndex = 0;    // ClientIndex as in RAMCloud clusterPerf.
 int threads = 50;        // How many client threads per machine to run benchmark.
                         // used for throughput benchmark only.
-int numWitness = 3;// send requests to witness as well as master.
+int numWitness = 0;// send requests to witness as well as master.
 
-redis::client* client;
-//redis::client* multiClient[1000];
+bool gc = true;
+
+redis::witness_client* client;
 
 // Common helper functions.
 uint64_t
@@ -95,27 +79,16 @@ generateRandom()
         close(fd);
         assert(bytesRead == sizeof(seed));
         statebuf = static_cast<char*>(malloc(STATE_BYTES));
-#ifdef __APPLE__
-        // TODO: Change to linux
-        initstate(seed, statebuf, STATE_BYTES);
-#else
         initstate_r(seed, statebuf, STATE_BYTES, &buf);
-#endif
     }
 
     // Each call to random returns 31 bits of randomness,
     // so we need three to get 64 bits of randomness.
     static_assert(RAND_MAX >= (1 << 31), "RAND_MAX too small");
     int32_t lo, mid, hi;
-#ifdef __APPLE__
-    lo = arc4random();
-    mid = arc4random();
-    hi = arc4random();
-#else
     random_r(&buf, &lo);
     random_r(&buf, &mid);
     random_r(&buf, &hi);
-#endif
     uint64_t r = (((uint64_t(hi) & 0x7FFFFFFF) << 33) | // NOLINT
                   ((uint64_t(mid) & 0x7FFFFFFF) << 2)  | // NOLINT
                   (uint64_t(lo) & 0x00000003)); // NOLINT
@@ -162,52 +135,55 @@ void makeKey(int value, uint32_t length, char* dest)
 PerfUtils::Atomic<int64_t> writeThroughputTotalWrites(0);
 
 void
-writeThroughputRunner(int tid) {
+writeThroughputRunner(int tid, bool gc) {
     int numKeys = 2000000;
     const uint16_t keyLength = 30;
     char* key = new char[keyLength + 1];
     char* value = new char[objectSize + 1];
 
-    redis::client* clientPtr = client;
+    redis::witness_client* clientPtr = client;
     if (tid != 0) {
-        std::vector<std::string> witnessIpsVec;
-        std::vector<int> witnessMasterIdx;
-        if (numWitness) {
-            for (int i = 0; i < numWitness; ++i) {
-                const char* witnessIp = witnessIps[i];
-                witnessIpsVec.push_back(std::string(witnessIp, strlen(witnessIp)));
-                witnessMasterIdx.push_back(1);
-            }
-        }
-        clientPtr = new redis::client(hostIp, witnessIpsVec, witnessMasterIdx);
+        clientPtr = new redis::witness_client(hostIp);
     }
 
-//    printf("New thread created! tid: %d clienId Assigned: %" PRIu64 ", rpcId: %" PRIu64 "\n", tid, multiClient[tid]->clientId, multiClient[tid]->lastRequestId);
+    //printf("New thread created! tid: %d clienId Assigned: %" PRIu64 ",
+    //rpcId: %" PRIu64 "\n", tid, multiClient[tid]->clientId, multiClient[tid]->lastRequestId);
     uint64_t writeCount = 0;
+    std::vector<std::string> gcKeys;
+    std::vector<uint64_t> gcReqIds;
     while(true) {
         makeKey(static_cast<int>(generateRandom() % numKeys), keyLength, key);
         genRandomString(value, objectSize);
-        clientPtr->set(std::string(key, keyLength), std::string(value, objectSize));
+        std::string keyStr = std::string(key, keyLength);
+        clientPtr->witnessset(keyStr, std::string(value, objectSize));
         writeCount++;
+        gcKeys.push_back(keyStr);
+        gcReqIds.push_back(clientPtr->lastRequestId);
         if (writeCount % 1000 == 0) {
             writeThroughputTotalWrites.add(1000);
+            if (gc) {
+                for (uint32_t ridx = 0; ridx < gcKeys.size(); ridx++) {
+                    clientPtr->witnessgc(gcKeys.at(ridx), gcReqIds.at(ridx));
+                }
+                gcKeys.clear();
+                gcReqIds.clear();
+            }
         }
     }
 }
 
 void
-writeThroughput()
+writeThroughput(bool gc)
 {
     Cycles::init();
     // Add startup delay.
-    int delayInSec = 10;
+    int delayInSec = 3;
     std::vector<std::thread> stdthreads;
     int lastWriteTotal = 0;
     uint64_t lastPrintTime = Cycles::rdtsc();
     for (int tid = 0; tid < threads; ++tid) {
-        stdthreads.push_back(std::thread(&writeThroughputRunner, tid));
+        stdthreads.push_back(std::thread(&writeThroughputRunner, tid, gc));
         Cycles::sleep(delayInSec*1000000);
-//        sleep(10);
         uint64_t currentTime = Cycles::rdtsc();
         printf("Started thread %d. Throughput: %7.2f kops/sec\n", tid,
                 (writeThroughputTotalWrites - lastWriteTotal) * 1e3 /
@@ -236,7 +212,6 @@ writeDistRandom()
 {
     usleep(500);
     int numKeys = 2000000;
-//    int numKeys = 1000; // For development only.
     if (clientIndex != 0)
         return;
 
@@ -245,13 +220,10 @@ writeDistRandom()
     char* key = new char[keyLength + 1];
     char* value = new char[objectSize + 1];
 
-    // fill table first.
-//    for (int i = 0; i < numKeys; ++i) {
     for (int i = 0; i < 10000; ++i) {
         makeKey(static_cast<int>(i), keyLength, key);
         genRandomString(value, objectSize);
-
-        client->set(std::string(key, keyLength), std::string(value, objectSize));
+        client->witnessset(std::string(key, keyLength), std::string(value, objectSize));
         // TODO: use pipelining.
     }
     Cycles::init();
@@ -273,7 +245,7 @@ writeDistRandom()
         genRandomString(value, objectSize);
         // Do the benchmark
         uint64_t start = Cycles::rdtsc();
-        client->set(std::string(key, keyLength), std::string(value, objectSize));
+        client->witnessset(std::string(key, keyLength), std::string(value, objectSize));
         uint64_t now = Cycles::rdtsc();
         ticks.at(i) = now - start;
         if (now >= stop) {
@@ -300,180 +272,8 @@ writeDistRandom()
 
     PerfUtils::TimeTrace::print();
 
-    delete[] key;
-    delete[] value;
-}
-
-void
-incrDistRandom()
-{
-    usleep(500);
-    int numKeys = 2000000;
-//    int numKeys = 10000; // For development only.
-    if (clientIndex != 0)
-        return;
-
-    const uint16_t keyLength = 30;
-
-    char* key = new char[keyLength + 1];
-
-    // fill table first.
-    for (int i = 0; i < numKeys; ++i) {
-        makeKey(static_cast<int>(i), keyLength, key);
-        client->set(std::string(key, keyLength), "0");
-        // TODO: use pipelining.
-    }
-    Cycles::init();
-
-    Cycles::sleep(10000);
-
-    // The following variable is used to stop the test after 10 seconds
-    // if we haven't read count keys by then.
-    uint64_t stop = Cycles::rdtsc() + Cycles::fromSeconds(300.0);
-
-    // Issue the writes back-to-back, and save the times.
-    std::vector<uint64_t> ticks;
-    ticks.resize(count);
-    for (int i = 0; i < count; i++) {
-        // We generate the random number separately to avoid timing potential
-        // cache misses on the client side.
-        makeKey(static_cast<int>(generateRandom() % numKeys), keyLength, key);
-        // Do the benchmark
-        uint64_t start = Cycles::rdtsc();
-        client->incr(std::string(key, keyLength));
-        uint64_t now = Cycles::rdtsc();
-        ticks.at(i) = now - start;
-        if (now >= stop) {
-            count = i+1;
-            break;
-        }
-    }
-
-    // Check consistency by reading values again.
-    int64_t sum = 0;
-    for (int i = 0; i < numKeys; ++i) {
-        makeKey(static_cast<int>(i), keyLength, key);
-        std::string str = client->get(std::string(key, keyLength));
-        const char* cstr = str.c_str();
-        char* end;
-        sum += std::strtoll(cstr, &end, 10);
-        if (errno == ERANGE){
-            throw redis::protocol_error("argument is out of int64_t range");
-            errno = 0;
-        }
-    }
-    if (sum != count) {
-        fprintf(stderr, "Bad! Incr count: %d, Actual Sum: %" PRId64 ", lastRpcId: %" PRIu64 "\n",
-                count, sum, client->lastRequestId);
-    }
-
-    // Output the times (several comma-separated values on each line).
-    int valuesInLine = 0;
-    for (int i = 0; i < count; i++) {
-        if (valuesInLine >= 10) {
-            valuesInLine = 0;
-            printf("\n");
-        }
-        if (valuesInLine != 0) {
-            printf(",");
-        }
-        double micros = Cycles::toSeconds(ticks.at(i))*1.0e06;
-        printf("%.2f", micros);
-        valuesInLine++;
-    }
-    printf("\n");
-
-    delete [] key;
-}
-
-// Write or overwrite randomly-chosen objects from a large table (so that there
-// will be cache misses on the hash table and the object) and compute a
-// cumulative distribution of write times.
-void
-hmsetDistRandom()
-{
-    usleep(500);
-    int numKeys = 2000000;
-//    int numKeys = 10000; // For development only.
-    if (clientIndex != 0)
-        return;
-
-    const uint16_t keyLength = 30;
-
-    char* key = new char[keyLength + 1];
-    char* value = new char[objectSize + 1];
-
-    typedef std::string string_type;
-    typedef std::pair<string_type, string_type> string_pair;
-    typedef std::vector<string_pair> string_pair_vector;
-
-    // fill table first.
-    for (int i = 0; i < numKeys; ++i) {
-        makeKey(static_cast<int>(i), keyLength, key);
-        genRandomString(value, objectSize);
-
-        string_pair_vector vecValue;
-        for (int j = 0; j < 10; ++j) {
-            vecValue.push_back(std::make_pair(std::to_string(j),
-                                              std::string(value, objectSize)));
-        }
-        client->hmset(std::string(key, keyLength), vecValue);
-        // TODO: use pipelining.
-    }
-    Cycles::init();
-
-    Cycles::sleep(10000);
-
-    // The following variable is used to stop the test after 10 seconds
-    // if we haven't read count keys by then.
-    uint64_t stop = Cycles::rdtsc() + Cycles::fromSeconds(300.0);
-
-    // Issue the writes back-to-back, and save the times.
-    std::vector<uint64_t> ticks;
-    ticks.resize(count);
-    for (int i = 0; i < count; i++) {
-        // We generate the random number separately to avoid timing potential
-        // cache misses on the client side.
-        makeKey(static_cast<int>(generateRandom() % numKeys), keyLength, key);
-        genRandomString(value, objectSize);
-        string_pair_vector vecValue;
-        vecValue.push_back(std::make_pair(std::to_string(generateRandom() % 10),
-                                          std::string(value, objectSize)));
-        // Do the benchmark
-        uint64_t start = Cycles::rdtsc();
-        client->hmset(std::string(key, keyLength), vecValue);
-        uint64_t now = Cycles::rdtsc();
-        ticks.at(i) = now - start;
-        if (now >= stop) {
-            count = i+1;
-            break;
-        }
-    }
-
-    // Just print the last key to see it actually works...
-    for (int i = 0; i < 10; i++) {
-        std::string sampleStr = client->hget(std::string(key, keyLength), std::to_string(i));
-        fprintf(stderr, "key: %s, member: %d, value: %s\n", key, i, sampleStr.c_str());
-    }
-
-    // Output the times (several comma-separated values on each line).
-    int valuesInLine = 0;
-    for (int i = 0; i < count; i++) {
-        if (valuesInLine >= 10) {
-            valuesInLine = 0;
-            printf("\n");
-        }
-        if (valuesInLine != 0) {
-            printf(",");
-        }
-        double micros = Cycles::toSeconds(ticks.at(i))*1.0e06;
-        printf("%.2f", micros);
-        valuesInLine++;
-    }
-    printf("\n");
-
-    delete [] key;
-    delete [] value;
+    delete(key);
+    delete(value);
 }
 
 /**
@@ -561,7 +361,6 @@ parseOptions(int argc, char* argv[]) {
 /* Catch Signal Handler functio */
 void signal_callback_handler(int signum) {
     ((void) signum);
-//    printf("Caught signal SIGPIPE %d\n",signum);
 }
 
 int
@@ -572,37 +371,14 @@ main(int argc, char *argv[]) {
 
     parseOptions(argc, argv);
 
-    std::vector<std::string> witnessIpsVec;
-    std::vector<int> witnessMasterIdx;
-    if (numWitness) {
-        for (int i = 0; i < numWitness; ++i) {
-            const char* witnessIp = witnessIps[i];
-            witnessIpsVec.push_back(std::string(witnessIp, strlen(witnessIp)));
-            witnessMasterIdx.push_back(1);
-        }
-    }
-    redis::client realClient(hostIp, witnessIpsVec, witnessMasterIdx);
+    redis::witness_client realClient(hostIp);
     client = &realClient;
-//    for (int tid = 0; tid < threads; tid++) {
-//        multiClient[tid] = new redis::client(hostIp, witnessIpsVec, witnessMasterIdx);
-//    }
-
-    client->select(14);
-    client->flushdb();
 
     if (strncmp("writeDistRandom", argv[1], 20) == 0) {
         writeDistRandom();
-    } else if (strncmp("incrDistRandom", argv[1], 20) == 0) {
-        incrDistRandom();
-    } else if (strncmp("hmsetDistRandom", argv[1], 20) == 0) {
-        hmsetDistRandom();
     } else if (strncmp("writeThroughput", argv[1], 20) == 0) {
-        writeThroughput();
+        writeThroughput(gc);
     } else {
         printf("no test was selected. (Provided argv[0]: %s\n", argv[0]);
     }
-
-//    for (int tid = 0; tid < threads; tid++) {
-//        delete multiClient[tid];
-//    }
 }
