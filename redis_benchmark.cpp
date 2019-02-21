@@ -200,7 +200,7 @@ writeThroughput()
 {
     Cycles::init();
     // Add startup delay.
-    int delayInSec = 10;
+    int delayInSec = 3;
     std::vector<std::thread> stdthreads;
     int lastWriteTotal = 0;
     uint64_t lastPrintTime = Cycles::rdtsc();

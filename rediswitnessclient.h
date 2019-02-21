@@ -439,9 +439,8 @@ namespace redis {
             fastcmd request(5, "SET");
             request << key << value << clientId << ++lastRequestId;
             witnesscmd_t cmd;
-            create_add_wcmd(&cmd, clientId, ++lastRequestId,
-                hashIndex, request.data(), request.size()); 
-            TimeTrace::record("Constructed witness record request string.");
+            create_add_wcmd(&cmd, clientId, lastRequestId,
+                            hashIndex, request.data(), request.size());
             udpWrite(socket,
                      SRC_ADDR,
                      connections_[0].host.c_str(),
@@ -451,7 +450,13 @@ namespace redis {
                      witness_size(&cmd),
                      &connections_[0].sin,
                      false);
-            recv_witness_reply_(socket, connections_[0].sin);
+            uint blen;
+            char buffer;
+            recvfrom(socket, &buffer, 1,
+                     MSG_WAITALL,
+                     (struct sockaddr *) &connections_[0].sin,
+                     &blen);
+            // buffer == 0;
             TimeTrace::record("Sent to witness");
         }
 
@@ -461,39 +466,28 @@ namespace redis {
             TimeTrace::record("Staring witnessgc operation.");
             uint32_t keyHash;
             MurmurHash3_x86_32(key.data(), key.size(), connections_[0].dbindex, &keyHash);
-            int hashIndex = keyHash & 1023;
+            uint32_t hashIndex = keyHash & 1023;
             int socket = connections_[0].socket;
-            /*
-            fastcmd cmd(5, "WGC");
-            cmd << "1" << (uint64_t)hashIndex << clientId << requestId;
-            send_(socket, cmd.data(), cmd.size());
-            string_vector unsyncedRPCCounts;
-            recv_multi_bulk_reply_(socket, unsyncedRPCCounts); 
-
-            //recv_ok_reply_(socket);
-            */
+            witnesscmd_t cmd;
+            create_del_wcmd(&cmd, clientId, requestId, hashIndex);
+            udpWrite(socket,
+                     SRC_ADDR,
+                     connections_[0].host.c_str(),
+                     WITNESS_CLIENT_PORT,
+                     WITNESS_PORT,
+                     witness_data(&cmd),
+                     witness_size(&cmd),
+                     &connections_[0].sin,
+                     false);
+            uint blen;
+            char buffer;
+            recvfrom(socket, &buffer, 1,
+                     MSG_WAITALL,
+                     (struct sockaddr *) &connections_[0].sin,
+                     &blen);
+            // TODO: Check proto.
+            // buffer == 0;
             TimeTrace::record("Sent gc to witness");
-        }
-
-        /**
-         * Receive one reply which has witness record result.
-         * \return
-         *      returns true if accepted. false if rejected.
-         */
-        bool recv_witness_reply_(int socket) {
-            return true;
-            /*
-            std::string reply = recv_single_line_reply_(socket);
-            TimeTrace::record("Received reply from a witness.");
-            std::string content = reply.substr(0,6);
-            if (content == REDIS_STATUS_REPLY_REJECT) {
-                return false;
-            } else if (content == REDIS_STATUS_REPLY_ACCEPT) {
-                return true;
-            } else {
-                throw protocol_error("Reply format for witness record request doesn't match.");
-            }
-            */
         }
 
     private:

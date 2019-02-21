@@ -49,7 +49,7 @@ int threads = 50;        // How many client threads per machine to run benchmark
                         // used for throughput benchmark only.
 int numWitness = 0;// send requests to witness as well as master.
 
-bool gc = true;
+bool gc = false;
 
 redis::witness_client* client;
 
